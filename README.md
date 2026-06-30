@@ -23,19 +23,46 @@ last-connected times (`eppAgent.lastConnectedDateTime` /
 `edrSensor.lastConnectedDateTime`, both nested in the response and returned in
 UTC). Endpoints with no last-connected timestamp at all are skipped.
 
-## Usage
+## Setup (one time)
 
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install requests
 
-export TMV1_TOKEN="<your Vision One API key>"              # needs Endpoint Inventory: View
-export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change per region
-./.venv/bin/python pull_offline_w11_endpoints.py
+cp .env.example .env      # then edit .env and set TMV1_TOKEN + TMV1_REGION_URL
+chmod 600 .env            # restrict to your user (recommended)
+```
+
+`.env` holds your token and region. It is git-ignored and must never be
+committed. See `.env.example` for the available variables and regional URLs.
+
+## Usage
+
+Once `.env` is set up, run the wrapper — it loads `.env` and runs the script:
+
+```bash
+./run.sh
 ```
 
 Results print to the console and are written to `offline_w11_endpoints.csv`
 (git-ignored — it contains customer endpoint data).
+
+### Running without run.sh
+
+You can also load the environment yourself and invoke Python directly:
+
+```bash
+set -a; source .env; set +a
+./.venv/bin/python pull_offline_w11_endpoints.py
+```
+
+Or skip `.env` entirely and export the variables inline:
+
+```bash
+export TMV1_TOKEN="<your Vision One API key>"              # needs Endpoint Inventory: View
+export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change per region
+./.venv/bin/python pull_offline_w11_endpoints.py
+```
 
 ### Regional base URLs
 

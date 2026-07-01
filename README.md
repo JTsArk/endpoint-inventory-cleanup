@@ -91,7 +91,16 @@ $env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
 pwsh ./Get-OfflineW11Endpoints.ps1
 ```
 
-Parameters can also be passed directly (they default to the env vars):
+Or use the wrapper `run.ps1` (the PowerShell twin of `run.sh`) — it loads
+`.env` if present, then runs the script. Any parameters are forwarded:
+
+```powershell
+pwsh ./run.ps1                     # loads .env, runs with defaults
+pwsh ./run.ps1 -OfflineHours 24    # forwards -OfflineHours to the script
+```
+
+Parameters can also be passed directly to the script (they default to the env
+vars):
 
 ```powershell
 pwsh ./Get-OfflineW11Endpoints.ps1 -HostnamePrefix w11 -OfflineHours 8

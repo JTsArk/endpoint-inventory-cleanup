@@ -79,14 +79,37 @@ export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change 
 | Canada | `https://api.ca.xdr.trendmicro.com` |
 | South Africa | `https://api.za.xdr.trendmicro.com` |
 
+## PowerShell version
+
+`Get-OfflineW11Endpoints.ps1` is a functionally identical port for
+**PowerShell 7+** (`pwsh`). It needs no dependencies — `Invoke-RestMethod`,
+JSON handling, and `Export-Csv` are all built in.
+
+```powershell
+$env:TMV1_TOKEN     = "<your Vision One API key>"
+$env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
+pwsh ./Get-OfflineW11Endpoints.ps1
+```
+
+Parameters can also be passed directly (they default to the env vars):
+
+```powershell
+pwsh ./Get-OfflineW11Endpoints.ps1 -HostnamePrefix w11 -OfflineHours 8
+```
+
+On macOS, install PowerShell with `brew install --cask powershell` (or
+`powershell@preview`, whose command is `pwsh-preview`). On Windows it is
+usually preinstalled or available from the Microsoft Store.
+
 ## Configuration
 
-Edit the constants near the top of `pull_offline_w11_endpoints.py`:
+Edit the constants near the top of `pull_offline_w11_endpoints.py` (Python), or
+pass parameters to `Get-OfflineW11Endpoints.ps1` (PowerShell):
 
-- `HOSTNAME_PREFIX` (default `w11`)
-- `OFFLINE_HOURS` (default `8`)
-- `PAGE_SIZE` (default `1000`)
-- `OUTPUT_CSV` (default `offline_w11_endpoints.csv`)
+- `HOSTNAME_PREFIX` / `-HostnamePrefix` (default `w11`)
+- `OFFLINE_HOURS` / `-OfflineHours` (default `8`)
+- `PAGE_SIZE` / `-PageSize` (default `1000`)
+- `OUTPUT_CSV` / `-OutputCsv` (default `offline_w11_endpoints.csv`)
 
 ## Notes
 

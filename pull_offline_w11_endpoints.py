@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pull endpoints from the Trend Vision One Endpoint Inventory that:
-  * have a host name starting with "w11" (case-insensitive), AND
+  * have a host name starting with HOSTNAME_PREFIX (case-insensitive, default "iws"), AND
   * have been offline for at least 8 hours.
 
 API used:  GET /v3.0/endpointSecurity/endpoints   (Endpoint Security -> Get endpoint list)
@@ -12,7 +12,7 @@ The Vision One endpoint-list API (TMV1-Filter header) only supports the
 operators eq / and / or / not / (). It has NO "starts-with" operator and NO
 date range / greater-than operator. Therefore:
   * we narrow server-side to Windows endpoints (cheap, reduces volume), and
-  * we apply the "host name starts with w11" and "offline >= 8h" rules
+  * we apply the "host name starts with HOSTNAME_PREFIX" and "offline >= 8h" rules
     client-side after fetching the page.
 
 "Offline" is determined from the most recent of the agent / sensor last-connected
@@ -53,10 +53,10 @@ BASE_URL = os.environ.get("TMV1_REGION_URL", "https://api.xdr.trendmicro.com").r
 
 TOKEN = os.environ.get("TMV1_TOKEN")
 
-HOSTNAME_PREFIX = "w11"   # case-insensitive
+HOSTNAME_PREFIX = "iws"   # case-insensitive
 OFFLINE_HOURS = 8
 PAGE_SIZE = 1000          # allowed: 10, 50, 100, 200, 500, 1000
-OUTPUT_CSV = "offline_w11_endpoints.csv"
+OUTPUT_CSV = f"offline_{HOSTNAME_PREFIX.lower()}_endpoints.csv"
 
 ENDPOINTS_PATH = "/v3.0/endpointSecurity/endpoints"
 
@@ -67,7 +67,7 @@ ENDPOINTS_PATH = "/v3.0/endpointSecurity/endpoints"
 # the nested structure directly.
 
 # Server-side filter: narrow to Windows endpoints to reduce data transferred.
-# (We cannot express "starts with w11" or "offline 8h" here.)
+# (We cannot express "starts with HOSTNAME_PREFIX" or "offline 8h" here.)
 SERVER_FILTER = "osPlatform eq 'windows'"
 
 

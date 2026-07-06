@@ -1,8 +1,8 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-    Pull Trend Vision One endpoints whose host name starts with "w11" and that
-    have been offline for at least 8 hours.
+    Pull Trend Vision One endpoints whose host name starts with -HostnamePrefix
+    (default "iws") and that have been offline for at least 8 hours.
 
 .DESCRIPTION
     Calls GET /v3.0/endpointSecurity/endpoints (Endpoint Security -> Get endpoint
@@ -12,8 +12,8 @@
     operators eq / and / or / not / (). It has NO "starts-with" operator and NO
     date range / greater-than operator. Therefore:
       * we narrow server-side to Windows endpoints (cheap, reduces volume), and
-      * we apply the "host name starts with w11" and "offline >= N hours" rules
-        client-side after fetching each page.
+      * we apply the "host name starts with -HostnamePrefix" and "offline >= N hours"
+        rules client-side after fetching each page.
 
     "Offline" is determined from the most recent of the agent / sensor
     last-connected timestamps (eppAgent.lastConnectedDateTime /
@@ -40,7 +40,7 @@ param(
     [string]$BaseUrl = $(if ($env:TMV1_REGION_URL) { $env:TMV1_REGION_URL } else { "https://api.xdr.trendmicro.com" }),
 
     # Host name prefix to match (case-insensitive).
-    [string]$HostnamePrefix = "w11",
+    [string]$HostnamePrefix = "iws",
 
     # Minimum hours offline to be included.
     [int]$OfflineHours = 8,
@@ -48,8 +48,8 @@ param(
     # Records per page: 10, 50, 100, 200, 500, or 1000.
     [int]$PageSize = 1000,
 
-    # Output CSV path.
-    [string]$OutputCsv = "offline_w11_endpoints.csv"
+    # Output CSV path. Defaults to a name derived from -HostnamePrefix.
+    [string]$OutputCsv = "offline_$($HostnamePrefix.ToLower())_endpoints.csv"
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,7 +63,7 @@ $BaseUrl = $BaseUrl.TrimEnd("/")
 $endpointsPath = "/v3.0/endpointSecurity/endpoints"
 
 # Server-side filter: narrow to Windows endpoints. We cannot express
-# "starts with w11" or "offline Nh" here (operator set is eq/and/or/not).
+# "starts with -HostnamePrefix" or "offline Nh" here (operator set is eq/and/or/not).
 $serverFilter = "osPlatform eq 'windows'"
 
 # Parse an ISO-8601 timestamp to a UTC DateTime. The API omits the timezone,

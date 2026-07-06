@@ -4,7 +4,8 @@ Python tooling for Trend Vision One that pulls endpoints from the **Endpoint
 Inventory** matching a host-name prefix and an offline threshold.
 
 `pull_offline_w11_endpoints.py` lists endpoints whose host name starts with
-`w11` (case-insensitive) and that have been **offline for at least 8 hours**.
+`iws` (case-insensitive, configurable) and that have been **offline for at
+least 8 hours**.
 
 ## How it works
 
@@ -44,8 +45,9 @@ Once `.env` is set up, run the wrapper — it loads `.env` and runs the script:
 ./run.sh
 ```
 
-Results print to the console and are written to `offline_w11_endpoints.csv`
-(git-ignored — it contains customer endpoint data).
+Results print to the console and are written to `offline_iws_endpoints.csv`
+(the filename tracks whatever `HOSTNAME_PREFIX` is set to; git-ignored — it
+contains customer endpoint data).
 
 ### Running without run.sh
 
@@ -103,7 +105,7 @@ Parameters can also be passed directly to the script (they default to the env
 vars):
 
 ```powershell
-pwsh ./Get-OfflineW11Endpoints.ps1 -HostnamePrefix w11 -OfflineHours 8
+pwsh ./Get-OfflineW11Endpoints.ps1 -HostnamePrefix iws -OfflineHours 8
 ```
 
 On macOS, install PowerShell with `brew install --cask powershell` (or
@@ -115,10 +117,11 @@ usually preinstalled or available from the Microsoft Store.
 Edit the constants near the top of `pull_offline_w11_endpoints.py` (Python), or
 pass parameters to `Get-OfflineW11Endpoints.ps1` (PowerShell):
 
-- `HOSTNAME_PREFIX` / `-HostnamePrefix` (default `w11`)
+- `HOSTNAME_PREFIX` / `-HostnamePrefix` (default `iws`)
 - `OFFLINE_HOURS` / `-OfflineHours` (default `8`)
 - `PAGE_SIZE` / `-PageSize` (default `1000`)
-- `OUTPUT_CSV` / `-OutputCsv` (default `offline_w11_endpoints.csv`)
+- `OUTPUT_CSV` / `-OutputCsv` (default derived from `HOSTNAME_PREFIX`, e.g.
+  `offline_iws_endpoints.csv`)
 
 ## Notes
 

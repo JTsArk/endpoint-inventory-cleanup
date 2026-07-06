@@ -21,6 +21,9 @@
     returned in UTC with no timezone marker, so we treat them as UTC.
     Endpoints with no last-connected timestamp at all are skipped.
 
+    Throttled (429) or transient (5xx) responses are retried with exponential
+    backoff, honoring the Retry-After header when the API sends one.
+
 .NOTES
     Requires API key permission: Endpoint Inventory -> View
     Requires PowerShell 7+ (pwsh). Runs on macOS, Linux, and Windows.
@@ -66,6 +69,52 @@ $endpointsPath = "/v3.0/endpointSecurity/endpoints"
 # "starts with -HostnamePrefix" or "offline Nh" here (operator set is eq/and/or/not).
 $serverFilter = "osPlatform eq 'windows'"
 
+# Retry/backoff for throttled (429) or transient (5xx) API responses.
+$MaxRetries = 5
+$BackoffBaseSeconds = 1.0
+$RetryableStatusCodes = 429, 500, 502, 503, 504
+
+# Invoke-RestMethod with retry + exponential backoff on 429/5xx. Honors the
+# Retry-After header when the API sends one; otherwise backs off exponentially
+# (1s, 2s, 4s, ...) with a little jitter to avoid retry storms. Non-retryable
+# errors are re-thrown immediately for the caller to handle.
+function Invoke-RestMethodWithBackoff {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers,
+        [int]$TimeoutSec = 60
+    )
+
+    for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -Headers $Headers -Method Get -TimeoutSec $TimeoutSec
+        } catch {
+            $response = $_.Exception.Response
+            $status = if ($response) { [int]$response.StatusCode } else { $null }
+
+            if (-not $status -or $RetryableStatusCodes -notcontains $status -or $attempt -eq $MaxRetries) {
+                throw
+            }
+
+            $delay = $null
+            $retryAfter = $response.Headers.RetryAfter
+            if ($retryAfter) {
+                if ($retryAfter.Delta) {
+                    $delay = $retryAfter.Delta.TotalSeconds
+                } elseif ($retryAfter.Date) {
+                    $delay = ($retryAfter.Date - [datetimeoffset]::UtcNow).TotalSeconds
+                }
+            }
+            if (-not $delay -or $delay -le 0) {
+                $delay = $BackoffBaseSeconds * [math]::Pow(2, $attempt) + (Get-Random -Minimum 0.0 -Maximum 0.5)
+            }
+
+            Write-Host ("  got {0}, retrying in {1:N1}s (attempt {2}/{3})" -f $status, $delay, ($attempt + 1), $MaxRetries)
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 # Parse an ISO-8601 timestamp to a UTC DateTime. The API omits the timezone,
 # and the values are UTC, so we assume UTC rather than local time.
 function ConvertTo-Utc([string]$value) {
@@ -109,7 +158,7 @@ $page    = 0
 while ($uri) {
     $page++
     try {
-        $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -TimeoutSec 60
+        $resp = Invoke-RestMethodWithBackoff -Uri $uri -Headers $headers -TimeoutSec 60
     } catch {
         $status = $_.Exception.Response.StatusCode.value__
         Write-Error "API error $status while calling $uri : $($_.Exception.Message)"

@@ -29,7 +29,9 @@ Required API key permission: Endpoint Inventory -> View
 
 import csv
 import os
+import random
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -57,6 +59,11 @@ HOSTNAME_PREFIX = "iws"   # case-insensitive
 OFFLINE_HOURS = 8
 PAGE_SIZE = 1000          # allowed: 10, 50, 100, 200, 500, 1000
 OUTPUT_CSV = f"offline_{HOSTNAME_PREFIX.lower()}_endpoints.csv"
+
+# Retry/backoff for throttled (429) or transient (5xx) API responses.
+MAX_RETRIES = 5
+BACKOFF_BASE_SECONDS = 1.0
+RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
 
 ENDPOINTS_PATH = "/v3.0/endpointSecurity/endpoints"
 
@@ -108,6 +115,35 @@ def last_seen(endpoint):
     return max(times) if times else None
 
 
+def get_with_backoff(session, url, headers, params, timeout=60):
+    """GET with retry + exponential backoff on 429 (throttled) / transient 5xx.
+
+    Honors the Retry-After header when the API sends one; otherwise backs off
+    exponentially (1s, 2s, 4s, ...) with a little jitter to avoid retry storms.
+    Non-retryable errors (4xx other than 429, etc.) are returned immediately
+    for the caller to handle.
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        resp = session.get(url, headers=headers, params=params, timeout=timeout)
+        if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
+            return resp
+
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = BACKOFF_BASE_SECONDS * (2 ** attempt)
+        else:
+            delay = BACKOFF_BASE_SECONDS * (2 ** attempt) + random.uniform(0, 0.5)
+
+        print(f"  got {resp.status_code}, retrying in {delay:.1f}s "
+              f"(attempt {attempt + 1}/{MAX_RETRIES})", file=sys.stderr)
+        time.sleep(delay)
+
+    return resp  # unreachable, but keeps type-checkers happy
+
+
 def fetch_all_endpoints(session):
     """Yield every endpoint matching the server-side filter, following nextLink pagination."""
     url = f"{BASE_URL}{ENDPOINTS_PATH}"
@@ -120,7 +156,7 @@ def fetch_all_endpoints(session):
     page = 0
     while url:
         page += 1
-        resp = session.get(url, headers=headers, params=params, timeout=60)
+        resp = get_with_backoff(session, url, headers, params)
         if resp.status_code != 200:
             sys.exit(f"API error {resp.status_code}: {resp.text}")
 

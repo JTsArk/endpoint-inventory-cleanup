@@ -61,6 +61,10 @@ Endpoints are removed from Endpoint Inventory via
 
 Both paths share the same underlying logic (`endpoint_delete.py` /
 `EndpointDelete.Helpers.ps1`), so the behavior is identical either way.
+Neither file is a script you run directly — they're shared helper modules
+imported by the pull and delete scripts on their respective side, holding the
+retry/backoff logic, the delete-submit-and-poll flow, and the results-CSV
+writer.
 
 > **This removes the Endpoint Inventory record only — it does NOT uninstall
 > the agent software from the physical machine.** Vision One's own docs also

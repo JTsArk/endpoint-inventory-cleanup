@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Convenience wrapper: load secrets from .env and run one of the puller scripts.
+# Convenience wrapper: load secrets from .env and run one of this repo's scripts.
 # Usage:
-#   ./run.sh                                  # default: pull_offline_w11_endpoints.py
-#   ./run.sh pull_high_risk_crem_alerts.py    # run a specific script
+#   ./run.sh                                  # default: pull_offline_endpoints.py
+#   ./run.sh delete_offline_endpoints.py      # run a specific script
 #   ./run.sh <script.py> [extra args...]
 set -euo pipefail
 
@@ -27,7 +27,7 @@ source .env
 set +a
 
 # First argument (if given) is the script to run; default to the original.
-SCRIPT="${1:-pull_offline_w11_endpoints.py}"
+SCRIPT="${1:-pull_offline_endpoints.py}"
 [[ $# -gt 0 ]] && shift
 
 exec ./.venv/bin/python "$SCRIPT" "$@"

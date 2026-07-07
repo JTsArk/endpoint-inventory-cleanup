@@ -1,8 +1,9 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-    Convenience wrapper: load secrets from .env (if present) and run
-    Get-OfflineW11Endpoints.ps1. The PowerShell twin of run.sh.
+    Convenience wrapper: load secrets from .env (if present) and run one of
+    this repo's scripts (default: Get-OfflineEndpoints.ps1). The PowerShell
+    twin of run.sh.
 
 .DESCRIPTION
     - Runs from the script's own folder, so it works no matter where you
@@ -11,14 +12,20 @@
       environment (the PowerShell equivalent of `set -a; source .env`).
       If there is no .env, it just relies on whatever TMV1_TOKEN /
       TMV1_REGION_URL are already set (env var, SecretManagement, etc.).
-    - Any parameters you pass are forwarded to the underlying script, e.g.
-        ./run.ps1 -OfflineHours 24 -HostnamePrefix w10
+    - If the first argument ends in .ps1, it's used as the script to run
+      instead of the default; everything else is forwarded, e.g.
+        ./run.ps1 Remove-OfflineEndpoints.ps1 -Verify
+    - Otherwise all parameters you pass are forwarded to the default script, e.g.
+        ./run.ps1 -OfflineHours 24 -HostnamePrefix iws
 
 .EXAMPLE
     ./run.ps1
 
 .EXAMPLE
     ./run.ps1 -OfflineHours 24
+
+.EXAMPLE
+    ./run.ps1 Remove-OfflineEndpoints.ps1 -Verify
 #>
 
 # NOTE: intentionally NOT [CmdletBinding()] and no param() block. An advanced
@@ -54,5 +61,13 @@ if ([string]::IsNullOrWhiteSpace($env:TMV1_TOKEN)) {
     exit 1
 }
 
-$script = Join-Path $PSScriptRoot "Get-OfflineW11Endpoints.ps1"
-& $script @args
+if ($args.Count -gt 0 -and $args[0] -like "*.ps1") {
+    $scriptName = $args[0]
+    $forwardArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+} else {
+    $scriptName = "Get-OfflineEndpoints.ps1"
+    $forwardArgs = $args
+}
+
+$script = Join-Path $PSScriptRoot $scriptName
+& $script @forwardArgs

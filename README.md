@@ -4,7 +4,7 @@ Tooling for Trend Vision One that (1) finds endpoints in the **Endpoint
 Inventory** matching a host-name prefix and an offline threshold, and (2)
 deletes those endpoints from Endpoint Inventory — all in one run if you want.
 
-`pull_offline_w11_endpoints.py` lists endpoints whose host name starts with
+`pull_offline_endpoints.py` lists endpoints whose host name starts with
 `iws` (case-insensitive, configurable) and that have been **offline for at
 least 8 hours**, writing them to `offline_iws_endpoints.csv`. **Right after
 listing, it offers to delete them too** — see
@@ -61,7 +61,7 @@ You can also load the environment yourself and invoke Python directly:
 
 ```bash
 set -a; source .env; set +a
-./.venv/bin/python pull_offline_w11_endpoints.py
+./.venv/bin/python pull_offline_endpoints.py
 ```
 
 Or skip `.env` entirely and export the variables inline:
@@ -69,7 +69,7 @@ Or skip `.env` entirely and export the variables inline:
 ```bash
 export TMV1_TOKEN="<your Vision One API key>"              # needs Endpoint Inventory: View
 export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change per region
-./.venv/bin/python pull_offline_w11_endpoints.py
+./.venv/bin/python pull_offline_endpoints.py
 ```
 
 ### Regional base URLs
@@ -89,14 +89,14 @@ export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change 
 
 ## PowerShell version
 
-`Get-OfflineW11Endpoints.ps1` is a functionally identical port for
+`Get-OfflineEndpoints.ps1` is a functionally identical port for
 **PowerShell 7+** (`pwsh`). It needs no dependencies — `Invoke-RestMethod`,
 JSON handling, and `Export-Csv` are all built in.
 
 ```powershell
 $env:TMV1_TOKEN     = "<your Vision One API key>"
 $env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
-pwsh ./Get-OfflineW11Endpoints.ps1
+pwsh ./Get-OfflineEndpoints.ps1
 ```
 
 Or use the wrapper `run.ps1` (the PowerShell twin of `run.sh`) — it loads
@@ -111,7 +111,7 @@ Parameters can also be passed directly to the script (they default to the env
 vars):
 
 ```powershell
-pwsh ./Get-OfflineW11Endpoints.ps1 -HostnamePrefix iws -OfflineHours 8
+pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix iws -OfflineHours 8
 ```
 
 On macOS, install PowerShell with `brew install --cask powershell` (or
@@ -120,22 +120,25 @@ usually preinstalled or available from the Microsoft Store.
 
 ## Configuration
 
-Edit the constants near the top of `pull_offline_w11_endpoints.py` (Python), or
-pass parameters to `Get-OfflineW11Endpoints.ps1` (PowerShell):
+Edit the constants near the top of `pull_offline_endpoints.py` (Python), or
+pass parameters to `Get-OfflineEndpoints.ps1` (PowerShell):
 
 - `HOSTNAME_PREFIX` / `-HostnamePrefix` (default `iws`)
 - `OFFLINE_HOURS` / `-OfflineHours` (default `8`)
 - `PAGE_SIZE` / `-PageSize` (default `1000`)
 - `OUTPUT_CSV` / `-OutputCsv` (default derived from `HOSTNAME_PREFIX`, e.g.
   `offline_iws_endpoints.csv`)
+- `DELETE_RESULTS_CSV` / `-DeleteResultsCsv` (default derived from
+  `HOSTNAME_PREFIX`, e.g. `delete_results_iws.csv`) — used only if you opt to
+  delete right after pulling
 
 ## Deleting endpoints
 
 Endpoints are removed from Endpoint Inventory via
 `POST /v3.0/endpointSecurity/endpoints/delete`. There are two ways to trigger it:
 
-1. **Automatically, right after pulling** — `pull_offline_w11_endpoints.py` /
-   `Get-OfflineW11Endpoints.ps1` list the matches, write the CSV, and then
+1. **Automatically, right after pulling** — `pull_offline_endpoints.py` /
+   `Get-OfflineEndpoints.ps1` list the matches, write the CSV, and then
    immediately ask whether to delete those same endpoints, using the exact
    same in-memory list (no re-read of the CSV, so there's no gap where the
    data could have changed).
@@ -162,7 +165,7 @@ skips straight past the first question for convenience.
 
 ```bash
 # Python — pulls, lists, then offers to delete
-./.venv/bin/python pull_offline_w11_endpoints.py
+./.venv/bin/python pull_offline_endpoints.py
 
 # Python — standalone delete against a saved CSV
 ./.venv/bin/python delete_offline_endpoints.py              # list, then ask whether to proceed
@@ -171,7 +174,7 @@ skips straight past the first question for convenience.
 
 ```powershell
 # PowerShell — pulls, lists, then offers to delete
-pwsh ./Get-OfflineW11Endpoints.ps1
+pwsh ./Get-OfflineEndpoints.ps1
 
 # PowerShell — standalone delete against a saved CSV
 pwsh ./Remove-OfflineEndpoints.ps1              # list, then ask whether to proceed
@@ -185,7 +188,7 @@ full audit trail to `delete_results_iws.csv`
 (`endpointName, agentGuid, taskId, finalStatus, errorMessage`).
 
 Standalone-script options: `--csv` / `-InputCsv` (default
-`offline_iws_endpoints.csv`), `--results-csv` / `-OutputResultsCsv` (default
+`offline_iws_endpoints.csv`), `--results-csv` / `-DeleteResultsCsv` (default
 `delete_results_iws.csv`).
 
 ## Notes

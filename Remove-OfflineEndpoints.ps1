@@ -4,10 +4,10 @@
     Delete endpoints from the Trend Vision One Endpoint Inventory.
 
 .DESCRIPTION
-    Reads the CSV produced by Get-OfflineW11Endpoints.ps1 (endpointName +
+    Reads the CSV produced by Get-OfflineEndpoints.ps1 (endpointName +
     agentGuid columns) and removes those endpoints from Endpoint Inventory.
 
-    Note: Get-OfflineW11Endpoints.ps1 now offers to do this immediately after
+    Note: Get-OfflineEndpoints.ps1 now offers to do this immediately after
     listing offline endpoints, so you don't need to run this script
     separately in the common case. This script remains useful for re-running
     the delete step later against a previously-saved CSV (e.g. if you said
@@ -20,7 +20,7 @@
       * Vision One's own docs warn: shut down endpoints before using this API;
         using it on active endpoints may prevent the resulting task from
         working correctly. This tool is intended for endpoints already
-        confirmed offline by Get-OfflineW11Endpoints.ps1.
+        confirmed offline by Get-OfflineEndpoints.ps1.
       * This API endpoint is only available on tenants updated to the
         Foundation Services release.
 
@@ -61,11 +61,11 @@ param(
     # Regional API base URL. Defaults to TMV1_REGION_URL, then US.
     [string]$BaseUrl = $(if ($env:TMV1_REGION_URL) { $env:TMV1_REGION_URL } else { "https://api.xdr.trendmicro.com" }),
 
-    # Input CSV path (output of Get-OfflineW11Endpoints.ps1).
+    # Input CSV path (output of Get-OfflineEndpoints.ps1).
     [string]$InputCsv = "offline_iws_endpoints.csv",
 
     # Results/audit-trail CSV path.
-    [string]$OutputResultsCsv = "delete_results_iws.csv",
+    [string]$DeleteResultsCsv = "delete_results_iws.csv",
 
     # Skip the interactive prompt below and go straight to the delete
     # confirmation. Without this switch, the script still only acts after
@@ -82,7 +82,7 @@ $BaseUrl = $BaseUrl.TrimEnd("/")
 # Read endpointName + agentGuid pairs from the puller's CSV output.
 function Get-EndpointsFromCsv([string]$path) {
     if (-not (Test-Path $path)) {
-        Write-Error "Input CSV not found: $path`nRun Get-OfflineW11Endpoints.ps1 first to generate it."
+        Write-Error "Input CSV not found: $path`nRun Get-OfflineEndpoints.ps1 first to generate it."
         exit 1
     }
     $rows = Import-Csv -Path $path
@@ -112,4 +112,4 @@ foreach ($ep in $endpoints) {
 }
 
 Invoke-DeleteFlow -Endpoints $endpoints -BaseUrl $BaseUrl -Token $Token `
-    -OutputResultsCsv $OutputResultsCsv -SkipFirstPrompt:$Verify | Out-Null
+    -DeleteResultsCsv $DeleteResultsCsv -SkipFirstPrompt:$Verify | Out-Null

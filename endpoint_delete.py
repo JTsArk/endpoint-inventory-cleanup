@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Shared helpers for deleting Trend Vision One endpoints from Endpoint
-Inventory. Used by both pull_offline_w11_endpoints.py (offers to delete
+Inventory. Used by both pull_offline_endpoints.py (offers to delete
 immediately after listing offline endpoints) and delete_offline_endpoints.py
 (standalone re-run against a previously-saved CSV).
 
@@ -9,6 +9,7 @@ API used: POST /v3.0/endpointSecurity/endpoints/delete, GET
 /v3.0/endpointSecurity/tasks/{id}  (Endpoint Security -> Remove endpoints)
 """
 
+import csv
 import random
 import sys
 import time
@@ -34,7 +35,7 @@ RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
 # HTTP helpers
 # --------------------------------------------------------------------------- #
 
-def request_with_backoff(session, method, url, headers=None, json_body=None, timeout=60):
+def request_with_backoff(session, method, url, headers=None, params=None, json_body=None, timeout=60):
     """Request with retry + exponential backoff on 429 (throttled) / transient 5xx.
 
     Honors the Retry-After header when the API sends one; otherwise backs off
@@ -42,7 +43,7 @@ def request_with_backoff(session, method, url, headers=None, json_body=None, tim
     Non-retryable errors are returned immediately for the caller to handle.
     """
     for attempt in range(MAX_RETRIES + 1):
-        resp = session.request(method, url, headers=headers, json=json_body, timeout=timeout)
+        resp = session.request(method, url, headers=headers, params=params, json=json_body, timeout=timeout)
         if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
             return resp
 
@@ -205,7 +206,6 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
         print(f"  {ep['endpointName']:<30} -> task {final_status}{suffix}")
 
     # Write the audit-trail CSV.
-    import csv
     fieldnames = ["endpointName", "agentGuid", "taskId", "finalStatus", "errorMessage"]
     with open(results_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

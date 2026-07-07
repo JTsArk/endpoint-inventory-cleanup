@@ -41,7 +41,7 @@
 .EXAMPLE
     $env:TMV1_TOKEN = "<your Vision One API key>"
     $env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
-    pwsh ./Get-OfflineW11Endpoints.ps1
+    pwsh ./Get-OfflineEndpoints.ps1
 #>
 
 [CmdletBinding()]
@@ -182,7 +182,7 @@ if ($results.Count -gt 0) {
             $m.endpointName, $m.lastSeenUtc, $m.offlineHours, $m.agentGuid)
     }
 
-    Invoke-DeleteFlow -Endpoints $results -BaseUrl $BaseUrl -Token $Token -OutputResultsCsv $DeleteResultsCsv | Out-Null
+    Invoke-DeleteFlow -Endpoints $results -BaseUrl $BaseUrl -Token $Token -DeleteResultsCsv $DeleteResultsCsv | Out-Null
 } else {
     Write-Host "No matching endpoints found."
 }

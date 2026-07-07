@@ -1,5 +1,5 @@
 # Shared helpers for deleting Trend Vision One endpoints from Endpoint
-# Inventory. Dot-sourced by both Get-OfflineW11Endpoints.ps1 (offers to
+# Inventory. Dot-sourced by both Get-OfflineEndpoints.ps1 (offers to
 # delete immediately after listing offline endpoints) and
 # Remove-OfflineEndpoints.ps1 (standalone re-run against a previously-saved
 # CSV).
@@ -140,7 +140,7 @@ function Invoke-DeleteFlow {
         [Parameter(Mandatory)] $Endpoints,
         [Parameter(Mandatory)] [string]$BaseUrl,
         [string]$Token,
-        [Parameter(Mandatory)] [string]$OutputResultsCsv,
+        [Parameter(Mandatory)] [string]$DeleteResultsCsv,
         [switch]$SkipFirstPrompt
     )
 
@@ -224,14 +224,14 @@ function Invoke-DeleteFlow {
         })
     }
 
-    $finalResults | Export-Csv -Path $OutputResultsCsv -Encoding utf8
+    $finalResults | Export-Csv -Path $DeleteResultsCsv -Encoding utf8
 
     $succeeded = ($finalResults | Where-Object { $_.finalStatus -eq "succeeded" }).Count
     $failed = ($finalResults | Where-Object { $_.finalStatus -in @("failed", "not_submitted", "unknown") }).Count
     $timedOut = ($finalResults | Where-Object { $_.finalStatus -eq "timeout" }).Count
 
     Write-Host ("`n{0} succeeded, {1} failed, {2} timed out. Wrote {3} rows to {4}" -f `
-        $succeeded, $failed, $timedOut, $finalResults.Count, $OutputResultsCsv)
+        $succeeded, $failed, $timedOut, $finalResults.Count, $DeleteResultsCsv)
 
     return $true
 }

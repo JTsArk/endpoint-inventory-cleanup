@@ -2,10 +2,10 @@
 """
 Delete endpoints from the Trend Vision One Endpoint Inventory.
 
-Reads the CSV produced by pull_offline_w11_endpoints.py (endpointName +
+Reads the CSV produced by pull_offline_endpoints.py (endpointName +
 agentGuid columns) and removes those endpoints from Endpoint Inventory.
 
-Note: pull_offline_w11_endpoints.py now offers to do this immediately after
+Note: pull_offline_endpoints.py now offers to do this immediately after
 listing offline endpoints, so you don't need to run this script separately
 in the common case. This script remains useful for re-running the delete
 step later against a previously-saved CSV (e.g. if you said "no" during the
@@ -18,7 +18,7 @@ IMPORTANT
   * Vision One's own docs warn: shut down endpoints before using this API;
     using it on active endpoints may prevent the resulting task from working
     correctly. This tool is intended for endpoints already confirmed offline
-    by pull_offline_w11_endpoints.py.
+    by pull_offline_endpoints.py.
   * This API endpoint is only available on tenants updated to the Foundation
     Services release.
 
@@ -62,7 +62,7 @@ BASE_URL = os.environ.get("TMV1_REGION_URL", "https://api.xdr.trendmicro.com").r
 TOKEN = os.environ.get("TMV1_TOKEN")
 
 INPUT_CSV = "offline_iws_endpoints.csv"
-OUTPUT_RESULTS_CSV = "delete_results_iws.csv"
+DELETE_RESULTS_CSV = "delete_results_iws.csv"
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +73,7 @@ def load_endpoints(csv_path):
     """Read endpointName + agentGuid pairs from the puller's CSV output."""
     if not os.path.isfile(csv_path):
         sys.exit(f"ERROR: input CSV not found: {csv_path}\n"
-                  f"Run pull_offline_w11_endpoints.py first to generate it.")
+                  f"Run pull_offline_endpoints.py first to generate it.")
 
     endpoints = []
     with open(csv_path, newline="") as f:
@@ -92,10 +92,13 @@ def load_endpoints(csv_path):
 # --------------------------------------------------------------------------- #
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Delete endpoints from the Trend Vision One Endpoint Inventory. "
+                     "See this script's module docstring for full details (safety model, "
+                     "required permissions, etc.).")
     parser.add_argument("--csv", default=INPUT_CSV, help=f"Input CSV path (default: {INPUT_CSV})")
-    parser.add_argument("--results-csv", default=OUTPUT_RESULTS_CSV,
-                         help=f"Results CSV path (default: {OUTPUT_RESULTS_CSV})")
+    parser.add_argument("--results-csv", default=DELETE_RESULTS_CSV,
+                         help=f"Results CSV path (default: {DELETE_RESULTS_CSV})")
     parser.add_argument("--verify", action="store_true",
                          help="Skip the interactive prompt below and go straight to the delete "
                               "confirmation. Without this flag, the script still only acts after "

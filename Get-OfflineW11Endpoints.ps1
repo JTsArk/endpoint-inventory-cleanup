@@ -25,7 +25,17 @@
     backoff, honoring the Retry-After header when the API sends one.
 
 .NOTES
-    Requires API key permission: Endpoint Inventory -> View
+    DELETING: after listing, if any matches were found, this script offers to
+    delete them right away (see EndpointDelete.Helpers.ps1) -- no need to
+    separately run Remove-OfflineEndpoints.ps1. It always asks interactively
+    first ("Delete these N endpoint(s) now?") and again with the full name
+    list before actually calling the delete API. If stdin is redirected
+    (e.g. run from cron), the prompt is skipped entirely and nothing is
+    deleted; Remove-OfflineEndpoints.ps1 remains available to delete later
+    against the CSV this script just wrote.
+
+    Requires API key permission: Endpoint Inventory -> View (add Remove
+    agents if you also want to be able to delete from this script).
     Requires PowerShell 7+ (pwsh). Runs on macOS, Linux, and Windows.
 
 .EXAMPLE
@@ -52,7 +62,10 @@ param(
     [int]$PageSize = 1000,
 
     # Output CSV path. Defaults to a name derived from -HostnamePrefix.
-    [string]$OutputCsv = "offline_$($HostnamePrefix.ToLower())_endpoints.csv"
+    [string]$OutputCsv = "offline_$($HostnamePrefix.ToLower())_endpoints.csv",
+
+    # Delete-results audit-trail CSV path, used only if you opt to delete.
+    [string]$DeleteResultsCsv = "delete_results_$($HostnamePrefix.ToLower()).csv"
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,51 +82,9 @@ $endpointsPath = "/v3.0/endpointSecurity/endpoints"
 # "starts with -HostnamePrefix" or "offline Nh" here (operator set is eq/and/or/not).
 $serverFilter = "osPlatform eq 'windows'"
 
-# Retry/backoff for throttled (429) or transient (5xx) API responses.
-$MaxRetries = 5
-$BackoffBaseSeconds = 1.0
-$RetryableStatusCodes = 429, 500, 502, 503, 504
-
-# Invoke-RestMethod with retry + exponential backoff on 429/5xx. Honors the
-# Retry-After header when the API sends one; otherwise backs off exponentially
-# (1s, 2s, 4s, ...) with a little jitter to avoid retry storms. Non-retryable
-# errors are re-thrown immediately for the caller to handle.
-function Invoke-RestMethodWithBackoff {
-    param(
-        [string]$Uri,
-        [hashtable]$Headers,
-        [int]$TimeoutSec = 60
-    )
-
-    for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
-        try {
-            return Invoke-RestMethod -Uri $Uri -Headers $Headers -Method Get -TimeoutSec $TimeoutSec
-        } catch {
-            $response = $_.Exception.Response
-            $status = if ($response) { [int]$response.StatusCode } else { $null }
-
-            if (-not $status -or $RetryableStatusCodes -notcontains $status -or $attempt -eq $MaxRetries) {
-                throw
-            }
-
-            $delay = $null
-            $retryAfter = $response.Headers.RetryAfter
-            if ($retryAfter) {
-                if ($retryAfter.Delta) {
-                    $delay = $retryAfter.Delta.TotalSeconds
-                } elseif ($retryAfter.Date) {
-                    $delay = ($retryAfter.Date - [datetimeoffset]::UtcNow).TotalSeconds
-                }
-            }
-            if (-not $delay -or $delay -le 0) {
-                $delay = $BackoffBaseSeconds * [math]::Pow(2, $attempt) + (Get-Random -Minimum 0.0 -Maximum 0.5)
-            }
-
-            Write-Host ("  got {0}, retrying in {1:N1}s (attempt {2}/{3})" -f $status, $delay, ($attempt + 1), $MaxRetries)
-            Start-Sleep -Seconds $delay
-        }
-    }
-}
+# Invoke-RestMethodWithBackoff, Invoke-DeleteFlow, etc. -- shared with
+# Remove-OfflineEndpoints.ps1.
+. (Join-Path $PSScriptRoot "EndpointDelete.Helpers.ps1")
 
 # Parse an ISO-8601 timestamp to a UTC DateTime. The API omits the timezone,
 # and the values are UTC, so we assume UTC rather than local time.
@@ -210,6 +181,8 @@ if ($results.Count -gt 0) {
         Write-Host ("  {0,-30} last seen {1,-28} offline {2}h  ({3})" -f `
             $m.endpointName, $m.lastSeenUtc, $m.offlineHours, $m.agentGuid)
     }
+
+    Invoke-DeleteFlow -Endpoints $results -BaseUrl $BaseUrl -Token $Token -OutputResultsCsv $DeleteResultsCsv | Out-Null
 } else {
     Write-Host "No matching endpoints found."
 }

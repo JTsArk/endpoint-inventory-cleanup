@@ -18,13 +18,24 @@ date range / greater-than operator. Therefore:
 "Offline" is determined from the most recent of the agent / sensor last-connected
 timestamps. If that time is more than OFFLINE_HOURS ago, the endpoint is offline.
 
+DELETING
+--------
+After listing, if any matches were found, this script offers to delete them
+right away (see endpoint_delete.py) — no need to separately run
+delete_offline_endpoints.py. It always asks interactively first ("Delete
+these N endpoint(s) now?") and again with the full name list before actually
+calling the delete API. If stdin isn't a terminal (e.g. run from cron), the
+prompt is skipped entirely and nothing is deleted; delete_offline_endpoints.py
+remains available to delete later against the CSV this script just wrote.
+
 USAGE
 -----
   export TMV1_TOKEN="<your Vision One API key>"
   export TMV1_REGION_URL="https://api.xdr.trendmicro.com"   # optional, defaults to US
   python3 pull_offline_w11_endpoints.py
 
-Required API key permission: Endpoint Inventory -> View
+Required API key permission: Endpoint Inventory -> View (add Remove agents
+if you also want to be able to delete from this script).
 """
 
 import csv
@@ -35,6 +46,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+
+import endpoint_delete
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -59,6 +72,7 @@ HOSTNAME_PREFIX = "iws"   # case-insensitive
 OFFLINE_HOURS = 8
 PAGE_SIZE = 1000          # allowed: 10, 50, 100, 200, 500, 1000
 OUTPUT_CSV = f"offline_{HOSTNAME_PREFIX.lower()}_endpoints.csv"
+DELETE_RESULTS_CSV = f"delete_results_{HOSTNAME_PREFIX.lower()}.csv"
 
 # Retry/backoff for throttled (429) or transient (5xx) API responses.
 MAX_RETRIES = 5
@@ -237,6 +251,9 @@ def main():
         for m in matches:
             print(f"  {m['endpointName']:<30} last seen {m['lastSeenUtc']:<28} "
                   f"offline {m['offlineHours']}h  ({m['agentGuid']})")
+
+        delete_candidates = [{"endpointName": m["endpointName"], "agentGuid": m["agentGuid"]} for m in matches]
+        endpoint_delete.run_delete_flow(delete_candidates, BASE_URL, TOKEN, DELETE_RESULTS_CSV)
     else:
         print("No matching endpoints found.")
 

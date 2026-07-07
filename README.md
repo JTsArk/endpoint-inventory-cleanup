@@ -1,8 +1,10 @@
 # Endpoint Inventory Cleanup
 
-Tooling for Trend Vision One that (1) finds endpoints in the **Endpoint
-Inventory** matching a host-name prefix and an offline threshold, and (2)
-deletes those endpoints from Endpoint Inventory — all in one run if you want.
+Tooling for Trend Vision One that:
+
+- Finds endpoints in the **Endpoint Inventory** matching a host-name prefix
+  (default `iws`) and an offline threshold (default 8 hours)
+- Deletes those endpoints from Endpoint Inventory after verification
 
 **Available in two equivalent implementations — pick one:**
 

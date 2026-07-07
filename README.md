@@ -66,6 +66,13 @@ imported by the pull and delete scripts on their respective side, holding the
 retry/backoff logic, the delete-submit-and-poll flow, and the results-CSV
 writer.
 
+**Retry / backoff:** every API call (pulling endpoints and deleting them)
+retries automatically on `429` (throttled) or transient `500 / 502 / 503 /
+504` responses, up to 5 attempts. It honors the API's `Retry-After` header
+when present; otherwise it backs off exponentially (1s, 2s, 4s, ...) with a
+little random jitter to avoid retry storms. Any other error status is
+returned immediately without retrying.
+
 > **This removes the Endpoint Inventory record only — it does NOT uninstall
 > the agent software from the physical machine.** Vision One's own docs also
 > warn that endpoints should be shut down before deleting them this way,

@@ -1,4 +1,4 @@
-# CHC Delete Endpoints
+# Endpoint Inventory Cleanup
 
 Tooling for Trend Vision One that (1) finds endpoints in the **Endpoint
 Inventory** matching a host-name prefix and an offline threshold, and (2)
@@ -13,7 +13,7 @@ Both do exactly the same thing and share the rest of this document (how it
 works, permissions, regional URLs, deleting-endpoints behavior). Only the
 setup/invocation commands differ.
 
-## How it works
+## How It Works
 
 Calls `GET /v3.0/endpointSecurity/endpoints` (Endpoint Security → Get endpoint
 list) and paginates via `nextLink`.
@@ -30,22 +30,14 @@ last-connected times (`eppAgent.lastConnectedDateTime` /
 `edrSensor.lastConnectedDateTime`, both nested in the response and returned in
 UTC). Endpoints with no last-connected timestamp at all are skipped.
 
-### Regional base URLs
+**Retry / backoff:** every API call (pulling endpoints and deleting them)
+retries automatically on `429` (throttled) or transient `500 / 502 / 503 /
+504` responses, up to 5 attempts. It honors the API's `Retry-After` header
+when present; otherwise it backs off exponentially (1s, 2s, 4s, ...) with a
+little random jitter to avoid retry storms. Any other error status is
+returned immediately without retrying.
 
-| Region | URL |
-|--------|-----|
-| US | `https://api.xdr.trendmicro.com` |
-| EU (Germany) | `https://api.eu.xdr.trendmicro.com` |
-| Singapore | `https://api.sg.xdr.trendmicro.com` |
-| Japan | `https://api.xdr.trendmicro.co.jp` |
-| Australia | `https://api.au.xdr.trendmicro.com` |
-| India | `https://api.in.xdr.trendmicro.com` |
-| UAE | `https://api.mea.xdr.trendmicro.com` |
-| UK | `https://api.uk.xdr.trendmicro.com` |
-| Canada | `https://api.ca.xdr.trendmicro.com` |
-| South Africa | `https://api.za.xdr.trendmicro.com` |
-
-## Deleting endpoints
+## Deleting Endpoints
 
 Endpoints are removed from Endpoint Inventory via
 `POST /v3.0/endpointSecurity/endpoints/delete`. There are two ways to trigger it
@@ -65,13 +57,6 @@ Neither file is a script you run directly — they're shared helper modules
 imported by the pull and delete scripts on their respective side, holding the
 retry/backoff logic, the delete-submit-and-poll flow, and the results-CSV
 writer.
-
-**Retry / backoff:** every API call (pulling endpoints and deleting them)
-retries automatically on `429` (throttled) or transient `500 / 502 / 503 /
-504` responses, up to 5 attempts. It honors the API's `Retry-After` header
-when present; otherwise it backs off exponentially (1s, 2s, 4s, ...) with a
-little random jitter to avoid retry storms. Any other error status is
-returned immediately without retrying.
 
 > **This removes the Endpoint Inventory record only — it does NOT uninstall
 > the agent software from the physical machine.** Vision One's own docs also
@@ -114,7 +99,7 @@ full audit trail to `delete_results_iws.csv`
 "Deleted from Endpoint Inventory", "Delete failed", "Not submitted (API
 error)").
 
-## Configuration reference
+## Configuration Reference
 
 | Concept | Python | PowerShell | Default |
 |---|---|---|---|
@@ -129,6 +114,43 @@ error)").
 Python options are constants near the top of the `.py` files; PowerShell
 options are named parameters.
 
+### Changing the Host Name Prefix and Offline Threshold
+
+**Python** — edit the `HOSTNAME_PREFIX` and `OFFLINE_HOURS` constants near the
+top of `pull_offline_endpoints.py`:
+
+```python
+HOSTNAME_PREFIX = "iws"   # case-insensitive
+OFFLINE_HOURS = 8
+```
+
+**PowerShell** — pass `-HostnamePrefix` and `-OfflineHours` on the command
+line (no file edit needed); they default to `iws` and `8` if omitted:
+
+```powershell
+pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix corp -OfflineHours 24
+pwsh ./run.ps1 -HostnamePrefix corp -OfflineHours 24   # via the wrapper
+```
+
+Both output CSV filenames (`offline_<prefix>_endpoints.csv` and
+`delete_results_<prefix>.csv`) are derived from the prefix automatically, in
+both implementations.
+
+### Regional Base URLs
+
+| Region | URL |
+|--------|-----|
+| US | `https://api.xdr.trendmicro.com` |
+| EU (Germany) | `https://api.eu.xdr.trendmicro.com` |
+| Singapore | `https://api.sg.xdr.trendmicro.com` |
+| Japan | `https://api.xdr.trendmicro.co.jp` |
+| Australia | `https://api.au.xdr.trendmicro.com` |
+| India | `https://api.in.xdr.trendmicro.com` |
+| UAE | `https://api.mea.xdr.trendmicro.com` |
+| UK | `https://api.uk.xdr.trendmicro.com` |
+| Canada | `https://api.ca.xdr.trendmicro.com` |
+| South Africa | `https://api.za.xdr.trendmicro.com` |
+
 ## Notes
 
 - The puller's API key needs the **Endpoint Inventory → View** permission.
@@ -142,7 +164,7 @@ options are named parameters.
 
 ## Python
 
-### Setup (one time)
+### Setup (One Time)
 
 ```bash
 python3 -m venv .venv
@@ -166,7 +188,7 @@ Once `.env` is set up, run the wrapper — it loads `.env` and runs the script:
 Results print to the console and are written to `offline_iws_endpoints.csv`
 (the filename tracks whatever `HOSTNAME_PREFIX` is set to; git-ignored — it
 contains customer endpoint data). If any matches were found, you'll then be
-asked whether to delete them — see [Deleting endpoints](#deleting-endpoints).
+asked whether to delete them — see [Deleting Endpoints](#deleting-endpoints).
 
 You can also run a specific script through the wrapper, or skip it entirely:
 
@@ -181,7 +203,7 @@ export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # export the variable
 ./.venv/bin/python pull_offline_endpoints.py
 ```
 
-### Deleting endpoints
+### Deleting Endpoints
 
 ```bash
 # Pulls, lists, then offers to delete
@@ -192,7 +214,7 @@ export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # export the variable
 ./.venv/bin/python delete_offline_endpoints.py --verify      # skip straight to the delete confirmation
 ```
 
-See [Deleting endpoints](#deleting-endpoints) above for the safety model and
+See [Deleting Endpoints](#deleting-endpoints) above for the safety model and
 what deletion actually does.
 
 ---
@@ -207,7 +229,7 @@ On macOS, install PowerShell with `brew install --cask powershell` (or
 `powershell@preview`, whose command is `pwsh-preview`). On Windows it is
 usually preinstalled or available from the Microsoft Store.
 
-### Setup (one time)
+### Setup (One Time)
 
 Nothing to install beyond PowerShell 7+ itself. Either set environment
 variables directly, or use the same `.env` file as the Python side (both
@@ -239,7 +261,7 @@ pwsh ./Get-OfflineEndpoints.ps1
 pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix iws -OfflineHours 8   # parameters default to the env vars above
 ```
 
-### Deleting endpoints
+### Deleting Endpoints
 
 ```powershell
 # Pulls, lists, then offers to delete
@@ -250,5 +272,5 @@ pwsh ./Remove-OfflineEndpoints.ps1              # list, then ask whether to proc
 pwsh ./Remove-OfflineEndpoints.ps1 -Verify      # skip straight to the delete confirmation
 ```
 
-See [Deleting endpoints](#deleting-endpoints) above for the safety model and
+See [Deleting Endpoints](#deleting-endpoints) above for the safety model and
 what deletion actually does.

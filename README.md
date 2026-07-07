@@ -155,6 +155,24 @@ Both paths share the same underlying logic (`endpoint_delete.py` /
 > which is why this tool only ever targets endpoints already confirmed
 > offline.
 
+**Also covers Server & Workload Protection (SWP / Cloud One Workload
+Security)** — no separate SWP API integration needed. Per Trend Micro's own
+docs (KA-0019142, KA-0012152), Endpoint Inventory removal now covers all
+Trend Vision One Endpoint Security agent deployments, including Server &
+Workload Protection, and (for endpoints removed after 2025/02/24) this
+removal also affects the underlying Cloud One - Workload Security / Apex One
+agent — not just the Vision One-side record.
+
+> **Caveat:** this only applies to SWP endpoints already showing up in
+> Vision One's unified Endpoint Inventory (the "Foundation-mode" console). A
+> legacy Deep Security Manager / Cloud One Workload Security instance that
+> isn't connected/migrated into Vision One won't appear in the
+> `GET /v3.0/endpointSecurity/endpoints` results this tool queries, so those
+> computers won't be touched by this tool either (see KA-0022958 for a known
+> migration-discrepancy issue where endpoints stay listed under a
+> disconnected Deep Security Manager instead of Server & Workload
+> Protection).
+
 **Safety model:** after listing the endpoints, you're always asked
 interactively whether to proceed ("Delete these N endpoint(s) now?"), and
 again with the full name list before anything is actually deleted ("Type

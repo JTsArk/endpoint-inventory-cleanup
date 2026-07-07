@@ -98,7 +98,10 @@ Deletion is asynchronous on Vision One's side — each accepted endpoint
 creates a task, which is polled until it reaches `succeeded` / `failed` (or
 times out after 120s), printing progress per endpoint name and writing a
 full audit trail to `delete_results_iws.csv`
-(`endpointName, agentGuid, taskId, finalStatus, errorMessage`).
+(`endpointName, agentGuid, taskId, finalStatus, errorMessage, actionTaken`).
+`actionTaken` is a human-readable summary derived from `finalStatus` (e.g.
+"Deleted from Endpoint Inventory", "Delete failed", "Not submitted (API
+error)").
 
 ## Configuration reference
 

@@ -25,6 +25,15 @@ BATCH_SIZE = 1000   # API max items per delete call
 POLL_INTERVAL_SECONDS = 5
 POLL_TIMEOUT_SECONDS = 120
 
+# Human-readable summary written to the "actionTaken" results-CSV column, keyed by finalStatus.
+ACTION_TAKEN_BY_STATUS = {
+    "succeeded": "Deleted from Endpoint Inventory",
+    "failed": "Delete failed",
+    "timeout": "Delete timed out",
+    "not_submitted": "Not submitted (API error)",
+    "unknown": "Delete status unknown (poll failed)",
+}
+
 # Retry/backoff for throttled (429) or transient (5xx) API responses.
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 1.0
@@ -206,17 +215,19 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
         print(f"  {ep['endpointName']:<30} -> task {final_status}{suffix}")
 
     # Write the audit-trail CSV.
-    fieldnames = ["endpointName", "agentGuid", "taskId", "finalStatus", "errorMessage"]
+    fieldnames = ["endpointName", "agentGuid", "taskId", "finalStatus", "errorMessage", "actionTaken"]
     with open(results_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for ep, r in zip(endpoints, results):
+            final_status = r.get("finalStatus", "not_submitted")
             writer.writerow({
                 "endpointName": ep["endpointName"],
                 "agentGuid": ep["agentGuid"],
                 "taskId": r.get("taskId") or "",
-                "finalStatus": r.get("finalStatus", "not_submitted"),
+                "finalStatus": final_status,
                 "errorMessage": r.get("errorMessage", ""),
+                "actionTaken": ACTION_TAKEN_BY_STATUS.get(final_status, final_status),
             })
 
     succeeded = sum(1 for r in results if r.get("finalStatus") == "succeeded")

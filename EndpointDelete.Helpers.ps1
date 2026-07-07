@@ -15,6 +15,15 @@ $script:DeleteBatchSize = 1000   # API max items per delete call
 $script:PollIntervalSeconds = 5
 $script:PollTimeoutSeconds = 120
 
+# Human-readable summary written to the "actionTaken" results-CSV column, keyed by finalStatus.
+$script:ActionTakenByStatus = @{
+    succeeded      = "Deleted from Endpoint Inventory"
+    failed         = "Delete failed"
+    timeout        = "Delete timed out"
+    not_submitted  = "Not submitted (API error)"
+    unknown        = "Delete status unknown (poll failed)"
+}
+
 # Retry/backoff for throttled (429) or transient (5xx) API responses.
 $script:DeleteMaxRetries = 5
 $script:DeleteBackoffBaseSeconds = 1.0
@@ -208,6 +217,7 @@ function Invoke-DeleteFlow {
                 taskId       = ""
                 finalStatus  = "not_submitted"
                 errorMessage = $submitted.error
+                actionTaken  = $script:ActionTakenByStatus["not_submitted"]
             })
             continue
         }
@@ -215,12 +225,14 @@ function Invoke-DeleteFlow {
         $result = Wait-DeleteTask -BaseUrl $BaseUrl -Headers $headers -TaskId $submitted.taskId
         $suffix = if ($result.errorMessage) { ": $($result.errorMessage)" } else { "" }
         Write-Host ("  {0,-30} -> task {1}{2}" -f $ep.endpointName, $result.status, $suffix)
+        $actionTaken = if ($script:ActionTakenByStatus.ContainsKey($result.status)) { $script:ActionTakenByStatus[$result.status] } else { $result.status }
         $finalResults.Add([pscustomobject]@{
             endpointName = $ep.endpointName
             agentGuid    = $ep.agentGuid
             taskId       = $submitted.taskId
             finalStatus  = $result.status
             errorMessage = $result.errorMessage
+            actionTaken  = $actionTaken
         })
     }
 

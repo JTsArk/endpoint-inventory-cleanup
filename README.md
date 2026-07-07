@@ -4,13 +4,14 @@ Tooling for Trend Vision One that (1) finds endpoints in the **Endpoint
 Inventory** matching a host-name prefix and an offline threshold, and (2)
 deletes those endpoints from Endpoint Inventory — all in one run if you want.
 
-`pull_offline_endpoints.py` lists endpoints whose host name starts with
-`iws` (case-insensitive, configurable) and that have been **offline for at
-least 8 hours**, writing them to `offline_iws_endpoints.csv`. **Right after
-listing, it offers to delete them too** — see
-[Deleting endpoints](#deleting-endpoints) below. `delete_offline_endpoints.py`
-remains available to delete later against a saved CSV (e.g. if you declined
-during the pull, or want to retry).
+**Available in two equivalent implementations — pick one:**
+
+- [Python](#python) — `pull_offline_endpoints.py` / `delete_offline_endpoints.py`
+- [PowerShell](#powershell) — `Get-OfflineEndpoints.ps1` / `Remove-OfflineEndpoints.ps1`
+
+Both do exactly the same thing and share the rest of this document (how it
+works, permissions, regional URLs, deleting-endpoints behavior). Only the
+setup/invocation commands differ.
 
 ## How it works
 
@@ -29,49 +30,6 @@ last-connected times (`eppAgent.lastConnectedDateTime` /
 `edrSensor.lastConnectedDateTime`, both nested in the response and returned in
 UTC). Endpoints with no last-connected timestamp at all are skipped.
 
-## Setup (one time)
-
-```bash
-python3 -m venv .venv
-./.venv/bin/pip install requests
-
-cp .env.example .env      # then edit .env and set TMV1_TOKEN + TMV1_REGION_URL
-chmod 600 .env            # restrict to your user (recommended)
-```
-
-`.env` holds your token and region. It is git-ignored and must never be
-committed. See `.env.example` for the available variables and regional URLs.
-
-## Usage
-
-Once `.env` is set up, run the wrapper — it loads `.env` and runs the script:
-
-```bash
-./run.sh
-```
-
-Results print to the console and are written to `offline_iws_endpoints.csv`
-(the filename tracks whatever `HOSTNAME_PREFIX` is set to; git-ignored — it
-contains customer endpoint data). If any matches were found, you'll then be
-asked whether to delete them — see [Deleting endpoints](#deleting-endpoints).
-
-### Running without run.sh
-
-You can also load the environment yourself and invoke Python directly:
-
-```bash
-set -a; source .env; set +a
-./.venv/bin/python pull_offline_endpoints.py
-```
-
-Or skip `.env` entirely and export the variables inline:
-
-```bash
-export TMV1_TOKEN="<your Vision One API key>"              # needs Endpoint Inventory: View
-export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change per region
-./.venv/bin/python pull_offline_endpoints.py
-```
-
 ### Regional base URLs
 
 | Region | URL |
@@ -87,64 +45,19 @@ export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # US default; change 
 | Canada | `https://api.ca.xdr.trendmicro.com` |
 | South Africa | `https://api.za.xdr.trendmicro.com` |
 
-## PowerShell version
-
-`Get-OfflineEndpoints.ps1` is a functionally identical port for
-**PowerShell 7+** (`pwsh`). It needs no dependencies — `Invoke-RestMethod`,
-JSON handling, and `Export-Csv` are all built in.
-
-```powershell
-$env:TMV1_TOKEN     = "<your Vision One API key>"
-$env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
-pwsh ./Get-OfflineEndpoints.ps1
-```
-
-Or use the wrapper `run.ps1` (the PowerShell twin of `run.sh`) — it loads
-`.env` if present, then runs the script. Any parameters are forwarded:
-
-```powershell
-pwsh ./run.ps1                     # loads .env, runs with defaults
-pwsh ./run.ps1 -OfflineHours 24    # forwards -OfflineHours to the script
-```
-
-Parameters can also be passed directly to the script (they default to the env
-vars):
-
-```powershell
-pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix iws -OfflineHours 8
-```
-
-On macOS, install PowerShell with `brew install --cask powershell` (or
-`powershell@preview`, whose command is `pwsh-preview`). On Windows it is
-usually preinstalled or available from the Microsoft Store.
-
-## Configuration
-
-Edit the constants near the top of `pull_offline_endpoints.py` (Python), or
-pass parameters to `Get-OfflineEndpoints.ps1` (PowerShell):
-
-- `HOSTNAME_PREFIX` / `-HostnamePrefix` (default `iws`)
-- `OFFLINE_HOURS` / `-OfflineHours` (default `8`)
-- `PAGE_SIZE` / `-PageSize` (default `1000`)
-- `OUTPUT_CSV` / `-OutputCsv` (default derived from `HOSTNAME_PREFIX`, e.g.
-  `offline_iws_endpoints.csv`)
-- `DELETE_RESULTS_CSV` / `-DeleteResultsCsv` (default derived from
-  `HOSTNAME_PREFIX`, e.g. `delete_results_iws.csv`) — used only if you opt to
-  delete right after pulling
-
 ## Deleting endpoints
 
 Endpoints are removed from Endpoint Inventory via
-`POST /v3.0/endpointSecurity/endpoints/delete`. There are two ways to trigger it:
+`POST /v3.0/endpointSecurity/endpoints/delete`. There are two ways to trigger it
+(commands for each language are in their own section below):
 
-1. **Automatically, right after pulling** — `pull_offline_endpoints.py` /
-   `Get-OfflineEndpoints.ps1` list the matches, write the CSV, and then
-   immediately ask whether to delete those same endpoints, using the exact
-   same in-memory list (no re-read of the CSV, so there's no gap where the
-   data could have changed).
-2. **Standalone, against a saved CSV** — `delete_offline_endpoints.py` /
-   `Remove-OfflineEndpoints.ps1` read `offline_iws_endpoints.csv` and do the
-   same thing. Use this if you declined during the pull, or want to retry.
+1. **Automatically, right after pulling** — the puller lists the matches,
+   writes the CSV, and then immediately asks whether to delete those same
+   endpoints, using the exact same in-memory list (no re-read of the CSV, so
+   there's no gap where the data could have changed).
+2. **Standalone, against a saved CSV** — the delete script reads
+   `offline_iws_endpoints.csv` and does the same thing. Use this if you
+   declined during the pull, or want to retry.
 
 Both paths share the same underlying logic (`endpoint_delete.py` /
 `EndpointDelete.Helpers.ps1`), so the behavior is identical either way.
@@ -181,33 +94,26 @@ isn't a terminal (e.g. run from cron), the prompt is skipped entirely and
 nothing is deleted. `--verify` / `-Verify` on the standalone scripts just
 skips straight past the first question for convenience.
 
-```bash
-# Python — pulls, lists, then offers to delete
-./.venv/bin/python pull_offline_endpoints.py
-
-# Python — standalone delete against a saved CSV
-./.venv/bin/python delete_offline_endpoints.py              # list, then ask whether to proceed
-./.venv/bin/python delete_offline_endpoints.py --verify      # skip straight to the delete confirmation
-```
-
-```powershell
-# PowerShell — pulls, lists, then offers to delete
-pwsh ./Get-OfflineEndpoints.ps1
-
-# PowerShell — standalone delete against a saved CSV
-pwsh ./Remove-OfflineEndpoints.ps1              # list, then ask whether to proceed
-pwsh ./Remove-OfflineEndpoints.ps1 -Verify      # skip straight to the delete confirmation
-```
-
 Deletion is asynchronous on Vision One's side — each accepted endpoint
 creates a task, which is polled until it reaches `succeeded` / `failed` (or
 times out after 120s), printing progress per endpoint name and writing a
 full audit trail to `delete_results_iws.csv`
 (`endpointName, agentGuid, taskId, finalStatus, errorMessage`).
 
-Standalone-script options: `--csv` / `-InputCsv` (default
-`offline_iws_endpoints.csv`), `--results-csv` / `-DeleteResultsCsv` (default
-`delete_results_iws.csv`).
+## Configuration reference
+
+| Concept | Python | PowerShell | Default |
+|---|---|---|---|
+| Host name prefix to match | `HOSTNAME_PREFIX` | `-HostnamePrefix` | `iws` |
+| Minimum hours offline | `OFFLINE_HOURS` | `-OfflineHours` | `8` |
+| Page size per API call | `PAGE_SIZE` | `-PageSize` | `1000` |
+| Pull output CSV | `OUTPUT_CSV` | `-OutputCsv` | derived, e.g. `offline_iws_endpoints.csv` |
+| Delete audit-trail CSV | `DELETE_RESULTS_CSV` | `-DeleteResultsCsv` | derived, e.g. `delete_results_iws.csv` |
+| Skip first delete prompt | `--verify` | `-Verify` | off |
+| Standalone delete input CSV | `--csv` | `-InputCsv` | `offline_iws_endpoints.csv` |
+
+Python options are constants near the top of the `.py` files; PowerShell
+options are named parameters.
 
 ## Notes
 
@@ -217,3 +123,118 @@ Standalone-script options: `--csv` / `-InputCsv` (default
 - This API endpoint is only available on tenants updated to the Foundation
   Services release.
 - Never commit a real token. `.env` and `*.csv` are git-ignored.
+
+---
+
+## Python
+
+### Setup (one time)
+
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install requests
+
+cp .env.example .env      # then edit .env and set TMV1_TOKEN + TMV1_REGION_URL
+chmod 600 .env            # restrict to your user (recommended)
+```
+
+`.env` holds your token and region. It is git-ignored and must never be
+committed. See `.env.example` for the available variables and regional URLs.
+
+### Usage
+
+Once `.env` is set up, run the wrapper — it loads `.env` and runs the script:
+
+```bash
+./run.sh
+```
+
+Results print to the console and are written to `offline_iws_endpoints.csv`
+(the filename tracks whatever `HOSTNAME_PREFIX` is set to; git-ignored — it
+contains customer endpoint data). If any matches were found, you'll then be
+asked whether to delete them — see [Deleting endpoints](#deleting-endpoints).
+
+You can also run a specific script through the wrapper, or skip it entirely:
+
+```bash
+./run.sh delete_offline_endpoints.py --verify   # run any script through the wrapper
+
+set -a; source .env; set +a                     # or load the environment yourself...
+./.venv/bin/python pull_offline_endpoints.py    # ...and invoke Python directly
+
+export TMV1_TOKEN="<your Vision One API key>"              # or skip .env entirely and
+export TMV1_REGION_URL="https://api.xdr.trendmicro.com"    # export the variables inline
+./.venv/bin/python pull_offline_endpoints.py
+```
+
+### Deleting endpoints
+
+```bash
+# Pulls, lists, then offers to delete
+./.venv/bin/python pull_offline_endpoints.py
+
+# Standalone delete against a saved CSV
+./.venv/bin/python delete_offline_endpoints.py              # list, then ask whether to proceed
+./.venv/bin/python delete_offline_endpoints.py --verify      # skip straight to the delete confirmation
+```
+
+See [Deleting endpoints](#deleting-endpoints) above for the safety model and
+what deletion actually does.
+
+---
+
+## PowerShell
+
+`Get-OfflineEndpoints.ps1` / `Remove-OfflineEndpoints.ps1` are a functionally
+identical port for **PowerShell 7+** (`pwsh`). They need no dependencies —
+`Invoke-RestMethod`, JSON handling, and `Export-Csv` are all built in.
+
+On macOS, install PowerShell with `brew install --cask powershell` (or
+`powershell@preview`, whose command is `pwsh-preview`). On Windows it is
+usually preinstalled or available from the Microsoft Store.
+
+### Setup (one time)
+
+Nothing to install beyond PowerShell 7+ itself. Either set environment
+variables directly, or use the same `.env` file as the Python side (both
+implementations read the same `TMV1_TOKEN` / `TMV1_REGION_URL`):
+
+```bash
+cp .env.example .env      # then edit .env and set TMV1_TOKEN + TMV1_REGION_URL
+chmod 600 .env            # restrict to your user (recommended)
+```
+
+### Usage
+
+Use the wrapper `run.ps1` (the PowerShell twin of `run.sh`) — it loads `.env`
+if present, then runs the puller. Any parameters are forwarded:
+
+```powershell
+pwsh ./run.ps1                     # loads .env, runs with defaults
+pwsh ./run.ps1 -OfflineHours 24    # forwards -OfflineHours to the script
+pwsh ./run.ps1 Remove-OfflineEndpoints.ps1 -Verify   # run a specific script through the wrapper
+```
+
+Or invoke a script directly:
+
+```powershell
+$env:TMV1_TOKEN     = "<your Vision One API key>"
+$env:TMV1_REGION_URL = "https://api.xdr.trendmicro.com"
+pwsh ./Get-OfflineEndpoints.ps1
+
+pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix iws -OfflineHours 8   # parameters default to the env vars above
+```
+
+### Deleting endpoints
+
+```powershell
+# Pulls, lists, then offers to delete
+pwsh ./Get-OfflineEndpoints.ps1
+
+# Standalone delete against a saved CSV
+pwsh ./Remove-OfflineEndpoints.ps1              # list, then ask whether to proceed
+pwsh ./Remove-OfflineEndpoints.ps1 -Verify      # skip straight to the delete confirmation
+```
+
+See [Deleting endpoints](#deleting-endpoints) above for the safety model and
+what deletion actually does.

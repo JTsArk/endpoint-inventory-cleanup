@@ -151,6 +151,9 @@ both implementations.
 | Canada | `https://api.ca.xdr.trendmicro.com` |
 | South Africa | `https://api.za.xdr.trendmicro.com` |
 
+`.env.example` sets `TMV1_REGION_URL` to the US endpoint by default — edit
+it in your `.env` if your tenant is in another region.
+
 ## Notes
 
 - The puller's API key needs the **Endpoint Inventory → View** permission.

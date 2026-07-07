@@ -11,7 +11,8 @@ NOTE ON FILTERING
 The Vision One endpoint-list API (TMV1-Filter header) only supports the
 operators eq / and / or / not / (). It has NO "starts-with" operator and NO
 date range / greater-than operator. Therefore:
-  * we narrow server-side to Windows endpoints (cheap, reduces volume), and
+  * we narrow server-side to OS_PLATFORM endpoints (default "windows"; cheap,
+    reduces volume), and
   * we apply the "host name starts with HOSTNAME_PREFIX" and "offline >= 8h" rules
     client-side after fetching the page.
 
@@ -68,6 +69,7 @@ TOKEN = os.environ.get("TMV1_TOKEN")
 
 HOSTNAME_PREFIX = "iws"   # case-insensitive
 OFFLINE_HOURS = 8
+OS_PLATFORM = "windows"   # windows | mac | linux | unix | unknown
 PAGE_SIZE = 1000          # allowed: 10, 50, 100, 200, 500, 1000
 OUTPUT_CSV = f"offline_{HOSTNAME_PREFIX.lower()}_endpoints.csv"
 DELETE_RESULTS_CSV = f"delete_results_{HOSTNAME_PREFIX.lower()}.csv"
@@ -80,9 +82,11 @@ ENDPOINTS_PATH = "/v3.0/endpointSecurity/endpoints"
 # avoid that mismatch silently dropping fields, we fetch full records and read
 # the nested structure directly.
 
-# Server-side filter: narrow to Windows endpoints to reduce data transferred.
+VALID_OS_PLATFORMS = ("windows", "mac", "linux", "unix", "unknown")
+
+# Server-side filter: narrow to OS_PLATFORM endpoints to reduce data transferred.
 # (We cannot express "starts with HOSTNAME_PREFIX" or "offline 8h" here.)
-SERVER_FILTER = "osPlatform eq 'windows'"
+SERVER_FILTER = f"osPlatform eq '{OS_PLATFORM}'"
 
 
 # --------------------------------------------------------------------------- #
@@ -156,12 +160,15 @@ def fetch_all_endpoints(session):
 def main():
     if not TOKEN:
         sys.exit("ERROR: set the TMV1_TOKEN environment variable to your Vision One API key.")
+    if OS_PLATFORM not in VALID_OS_PLATFORMS:
+        sys.exit(f"ERROR: OS_PLATFORM must be one of {VALID_OS_PLATFORMS!r}, got {OS_PLATFORM!r}.")
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=OFFLINE_HOURS)
     print(f"Now (UTC):            {now.isoformat()}")
     print(f"Offline cutoff (UTC): {cutoff.isoformat()}  (last seen at or before this = offline)")
-    print(f"Host name prefix:     {HOSTNAME_PREFIX!r} (case-insensitive)\n")
+    print(f"Host name prefix:     {HOSTNAME_PREFIX!r} (case-insensitive)")
+    print(f"OS platform:          {OS_PLATFORM!r}\n")
 
     session = requests.Session()
     matches = []
@@ -200,7 +207,7 @@ def main():
     # Sort longest-offline first.
     matches.sort(key=lambda m: (m["offlineHours"] == "", m["offlineHours"]), reverse=True)
 
-    print(f"\nScanned {scanned} Windows endpoints; "
+    print(f"\nScanned {scanned} {OS_PLATFORM.capitalize()} endpoints; "
           f"{len(matches)} match (host starts with '{HOSTNAME_PREFIX}' AND offline >= {OFFLINE_HOURS}h).\n")
 
     if matches:

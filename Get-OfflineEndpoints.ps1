@@ -11,7 +11,8 @@
     The Vision One endpoint-list filter (TMV1-Filter header) only supports the
     operators eq / and / or / not / (). It has NO "starts-with" operator and NO
     date range / greater-than operator. Therefore:
-      * we narrow server-side to Windows endpoints (cheap, reduces volume), and
+      * we narrow server-side to -OsPlatform endpoints (default "windows";
+        cheap, reduces volume), and
       * we apply the "host name starts with -HostnamePrefix" and "offline >= N hours"
         rules client-side after fetching each page.
 
@@ -58,6 +59,10 @@ param(
     # Minimum hours offline to be included.
     [int]$OfflineHours = 8,
 
+    # OS platform to filter to server-side.
+    [ValidateSet("windows", "mac", "linux", "unix", "unknown")]
+    [string]$OsPlatform = "windows",
+
     # Records per page: 10, 50, 100, 200, 500, or 1000.
     [int]$PageSize = 1000,
 
@@ -78,9 +83,9 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $endpointsPath = "/v3.0/endpointSecurity/endpoints"
 
-# Server-side filter: narrow to Windows endpoints. We cannot express
+# Server-side filter: narrow to -OsPlatform endpoints. We cannot express
 # "starts with -HostnamePrefix" or "offline Nh" here (operator set is eq/and/or/not).
-$serverFilter = "osPlatform eq 'windows'"
+$serverFilter = "osPlatform eq '$OsPlatform'"
 
 # Invoke-RestMethodWithBackoff, Invoke-DeleteFlow, etc. -- shared with
 # Remove-OfflineEndpoints.ps1.
@@ -114,7 +119,8 @@ $cutoff = $now.AddHours(-$OfflineHours)
 
 Write-Host ("Now (UTC):            {0:o}" -f $now)
 Write-Host ("Offline cutoff (UTC): {0:o}  (last seen at or before this = offline)" -f $cutoff)
-Write-Host ("Host name prefix:     '{0}' (case-insensitive)`n" -f $HostnamePrefix)
+Write-Host ("Host name prefix:     '{0}' (case-insensitive)" -f $HostnamePrefix)
+Write-Host ("OS platform:          '{0}'`n" -f $OsPlatform)
 
 $headers = @{
     Authorization = "Bearer $Token"
@@ -171,8 +177,9 @@ while ($uri) {
 # Longest-offline first. Wrap in @() so a single match stays a countable array.
 $results = @($results | Sort-Object offlineHours -Descending)
 
-Write-Host ("`nScanned {0} Windows endpoints; {1} match (host starts with '{2}' AND offline >= {3}h).`n" -f `
-    $scanned, $results.Count, $HostnamePrefix, $OfflineHours)
+$osPlatformDisplay = $OsPlatform.Substring(0,1).ToUpper() + $OsPlatform.Substring(1)
+Write-Host ("`nScanned {0} {1} endpoints; {2} match (host starts with '{3}' AND offline >= {4}h).`n" -f `
+    $scanned, $osPlatformDisplay, $results.Count, $HostnamePrefix, $OfflineHours)
 
 if ($results.Count -gt 0) {
     $results | Export-Csv -Path $OutputCsv -Encoding utf8

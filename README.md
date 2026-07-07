@@ -3,7 +3,7 @@
 Tooling for Trend Vision One that:
 
 - Finds endpoints in the **Endpoint Inventory** matching a host-name prefix
-  (default `iws`) and an offline threshold (default 8 hours)
+  (default `iws`, case-insensitive) and an offline threshold (default 8 hours)
 - Deletes those endpoints from Endpoint Inventory after verification
 
 **Available in two equivalent implementations — pick one:**
@@ -24,7 +24,8 @@ The Vision One endpoint-list filter (`TMV1-Filter` header) only supports
 `eq / and / or / not / ()` — it has **no "starts-with" operator and no
 date-range operator**. So the script:
 
-- narrows server-side to Windows endpoints (`osPlatform eq 'windows'`), then
+- narrows server-side to a configurable OS platform (`osPlatform eq '...'`,
+  default `windows`), then
 - applies the host-name prefix and the 8-hour offline test **client-side**.
 
 "Offline" is derived from the most recent of the agent and sensor
@@ -95,7 +96,8 @@ skips straight past the first question for convenience.
 Deletion is asynchronous on Vision One's side — each accepted endpoint
 creates a task, which is polled until it reaches `succeeded` / `failed` (or
 times out after 120s), printing progress per endpoint name and writing a
-full audit trail to `delete_results_iws.csv`
+full audit trail to `delete_results_iws.csv` (the filename tracks the
+host-name prefix, same as the pull CSV)
 (`endpointName, agentGuid, taskId, finalStatus, errorMessage, actionTaken`).
 `actionTaken` is a human-readable summary derived from `finalStatus` (e.g.
 "Deleted from Endpoint Inventory", "Delete failed", "Not submitted (API
@@ -105,34 +107,41 @@ error)").
 
 | Concept | Python | PowerShell | Default |
 |---|---|---|---|
-| Host name prefix to match | `HOSTNAME_PREFIX` | `-HostnamePrefix` | `iws` |
+| Host name prefix to match (case-insensitive) | `HOSTNAME_PREFIX` | `-HostnamePrefix` | `iws` |
 | Minimum hours offline | `OFFLINE_HOURS` | `-OfflineHours` | `8` |
 | Page size per API call | `PAGE_SIZE` | `-PageSize` | `1000` |
 | Pull output CSV | `OUTPUT_CSV` | `-OutputCsv` | derived, e.g. `offline_iws_endpoints.csv` |
 | Delete audit-trail CSV | `DELETE_RESULTS_CSV` | `-DeleteResultsCsv` | derived, e.g. `delete_results_iws.csv` |
 | Skip first delete prompt | `--verify` | `-Verify` | off |
 | Standalone delete input CSV | `--csv` | `-InputCsv` | `offline_iws_endpoints.csv` |
+| OS platform filter | `OS_PLATFORM` | `-OsPlatform` | `windows` |
 
 Python options are constants near the top of the `.py` files; PowerShell
 options are named parameters.
 
-### Changing the Host Name Prefix and Offline Threshold
+### Changing the Host Name Prefix, Offline Threshold, and OS Platform
 
-**Python** — edit the `HOSTNAME_PREFIX` and `OFFLINE_HOURS` constants near the
-top of `pull_offline_endpoints.py`:
+**Python** — edit the `HOSTNAME_PREFIX`, `OFFLINE_HOURS`, and `OS_PLATFORM`
+constants near the top of `pull_offline_endpoints.py`:
 
 ```python
 HOSTNAME_PREFIX = "iws"   # case-insensitive
 OFFLINE_HOURS = 8
+OS_PLATFORM = "windows"   # windows | mac | linux | unix | unknown
 ```
 
-**PowerShell** — pass `-HostnamePrefix` and `-OfflineHours` on the command
-line (no file edit needed); they default to `iws` and `8` if omitted:
+**PowerShell** — pass `-HostnamePrefix`, `-OfflineHours`, and `-OsPlatform`
+on the command line (no file edit needed); they default to `iws`, `8`, and
+`windows` if omitted:
 
 ```powershell
-pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix corp -OfflineHours 24
-pwsh ./run.ps1 -HostnamePrefix corp -OfflineHours 24   # via the wrapper
+pwsh ./Get-OfflineEndpoints.ps1 -HostnamePrefix corp -OfflineHours 24 -OsPlatform linux
+pwsh ./run.ps1 -HostnamePrefix corp -OfflineHours 24 -OsPlatform linux   # via the wrapper
 ```
+
+`-OsPlatform` is validated against `windows`, `mac`, `linux`, `unix`, and
+`unknown` — anything else is rejected before any API call is made. The
+Python side (`OS_PLATFORM`) checks the same set at startup.
 
 Both output CSV filenames (`offline_<prefix>_endpoints.csv` and
 `delete_results_<prefix>.csv`) are derived from the prefix automatically, in
@@ -194,6 +203,8 @@ Results print to the console and are written to `offline_iws_endpoints.csv`
 (the filename tracks whatever `HOSTNAME_PREFIX` is set to; git-ignored — it
 contains customer endpoint data). If any matches were found, you'll then be
 asked whether to delete them — see [Deleting Endpoints](#deleting-endpoints).
+If you proceed, a delete audit-trail is written to `delete_results_iws.csv`
+(also tracks `HOSTNAME_PREFIX`).
 
 You can also run a specific script through the wrapper, or skip it entirely:
 
@@ -255,6 +266,13 @@ pwsh ./run.ps1                     # loads .env, runs with defaults
 pwsh ./run.ps1 -OfflineHours 24    # forwards -OfflineHours to the script
 pwsh ./run.ps1 Remove-OfflineEndpoints.ps1 -Verify   # run a specific script through the wrapper
 ```
+
+Results print to the console and are written to `offline_iws_endpoints.csv`
+(the filename tracks whatever `-HostnamePrefix` is set to; git-ignored — it
+contains customer endpoint data). If any matches were found, you'll then be
+asked whether to delete them — see [Deleting Endpoints](#deleting-endpoints).
+If you proceed, a delete audit-trail is written to `delete_results_iws.csv`
+(also tracks `-HostnamePrefix`).
 
 Or invoke a script directly:
 

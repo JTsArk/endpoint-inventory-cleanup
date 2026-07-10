@@ -3,12 +3,16 @@
 On-demand AWS Lambda: scan Trend Vision One Endpoint Inventory for endpoints
 matching a host-name prefix that have been offline for a while, and return
 the list. LIST ONLY -- this function never deletes anything. Review its
-output, then delete separately and explicitly with delete_offline_endpoints.py
-or Remove-OfflineEndpoints.ps1 (pointed at the agentGuid values returned
-here) -- there is no automatic or chained delete step.
+output (or the S3/SNS notification, if configured), then delete separately
+and explicitly -- either with delete_offline_endpoints.py /
+Remove-OfflineEndpoints.ps1 locally, or by invoking the companion
+lambda_delete_function.py Lambda -- there is no automatic or chained delete
+step.
 
-Stdlib only (urllib), so it deploys as a single file with no dependency
-layer: zip this file alone and upload it.
+Only urllib is required (no dependency layer needed for the API calls);
+boto3 is used for the optional S3/SNS integration and ships built into every
+AWS-provided Python Lambda runtime, so this still deploys as a single file
+with no packaging step: zip this file alone and upload it.
 
 Invoke on demand, e.g.:
   aws lambda invoke --function-name offline-endpoint-scanner \
@@ -21,8 +25,17 @@ Event overrides (all optional; fall back to the defaults below):
 Required Lambda environment variables:
   TMV1_TOKEN        Vision One API key (Endpoint Inventory -> View)
   TMV1_REGION_URL   optional, defaults to the US endpoint
+
+Optional Lambda environment variables:
+  RESULTS_BUCKET    if set, writes the match list as a CSV to
+                    s3://RESULTS_BUCKET/scans/<prefix>-<timestamp>.csv
+  SNS_TOPIC_ARN     if set, publishes a summary (+ S3 link, if RESULTS_BUCKET
+                    is also set) to this topic after every scan, including
+                    zero-match runs
 """
 
+import csv
+import io
 import json
 import os
 import random
@@ -30,6 +43,8 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+
+import boto3
 
 DEFAULT_BASE_URL = "https://api.xdr.trendmicro.com"
 ENDPOINTS_PATH = "/v3.0/endpointSecurity/endpoints"
@@ -124,6 +139,52 @@ def fetch_all_endpoints(base_url, token, server_filter, page_size):
 
 
 # --------------------------------------------------------------------------- #
+# S3 / SNS helpers
+# --------------------------------------------------------------------------- #
+
+RESULTS_CSV_FIELDNAMES = [
+    "endpointName", "agentGuid", "type", "osName", "ipAddresses",
+    "eppAgentStatus", "edrSensorConnectivity", "lastSeenUtc", "offlineHours",
+]
+
+
+def write_matches_csv_to_s3(bucket, key, matches):
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=RESULTS_CSV_FIELDNAMES)
+    writer.writeheader()
+    writer.writerows(matches)
+    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=buf.getvalue().encode("utf-8"),
+                                   ContentType="text/csv")
+
+
+def publish_scan_summary(topic_arn, hostname_prefix, offline_hours, os_platform, scanned, matches,
+                          s3_bucket, s3_key):
+    subject = f"Offline endpoint scan: {len(matches)} match(es) for '{hostname_prefix}'"[:100]
+    lines = [
+        f"Scanned {scanned} {os_platform} endpoint(s); {len(matches)} match "
+        f"(host starts with '{hostname_prefix}' AND offline >= {offline_hours}h).",
+        "",
+    ]
+    if s3_key:
+        lines.append(f"Full list: s3://{s3_bucket}/{s3_key}")
+        lines.append("")
+
+    preview_count = 25
+    for m in matches[:preview_count]:
+        lines.append(f"  {m['endpointName']:<30} offline {m['offlineHours']}h  ({m['agentGuid']})")
+    if len(matches) > preview_count:
+        lines.append(f"  ... and {len(matches) - preview_count} more (see the S3 CSV above)")
+
+    if matches:
+        lines.append("")
+        lines.append("Nothing was deleted. To delete, invoke offline-endpoint-deleter with:")
+        lines.append(f'  {{"s3Bucket": "{s3_bucket}", "s3Key": "{s3_key}"}}')
+        lines.append("to preview, then again with \"confirm\": true to actually delete.")
+
+    boto3.client("sns").publish(TopicArn=topic_arn, Subject=subject, Message="\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
 # Handler
 # --------------------------------------------------------------------------- #
 
@@ -186,6 +247,18 @@ def lambda_handler(event, context):
 
     matches.sort(key=lambda m: m["offlineHours"], reverse=True)
 
+    s3_bucket = os.environ.get("RESULTS_BUCKET")
+    s3_key = None
+    if matches and s3_bucket:
+        timestamp = now.strftime("%Y%m%dT%H%M%SZ")
+        s3_key = f"scans/{hostname_prefix.lower()}-{timestamp}.csv"
+        write_matches_csv_to_s3(s3_bucket, s3_key, matches)
+
+    sns_topic_arn = os.environ.get("SNS_TOPIC_ARN")
+    if sns_topic_arn:
+        publish_scan_summary(sns_topic_arn, hostname_prefix, offline_hours, os_platform, scanned,
+                              matches, s3_bucket, s3_key)
+
     return build_response(200, {
         "nowUtc": now.isoformat(),
         "cutoffUtc": cutoff.isoformat(),
@@ -195,6 +268,9 @@ def lambda_handler(event, context):
         "scanned": scanned,
         "matchCount": len(matches),
         "matches": matches,
-        "note": ("LIST ONLY -- nothing was deleted. Review these agentGuid values, then delete "
-                 "them explicitly with delete_offline_endpoints.py or Remove-OfflineEndpoints.ps1."),
+        "s3Bucket": s3_bucket if s3_key else None,
+        "s3Key": s3_key,
+        "note": ("LIST ONLY -- nothing was deleted. Review these agentGuid values, then delete them "
+                 "explicitly with delete_offline_endpoints.py, Remove-OfflineEndpoints.ps1, or by "
+                 "invoking offline-endpoint-deleter with this s3Bucket/s3Key."),
     })

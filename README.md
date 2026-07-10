@@ -15,9 +15,11 @@ Both do exactly the same thing and share the rest of this document (how it
 works, permissions, regional URLs, deleting-endpoints behavior). Only the
 setup/invocation commands differ.
 
-There's also a [Lambda](#lambda-list-only-scanner) variant — **listing
-only, no delete step** — for running the scan on demand without a local
-Python/PowerShell setup.
+There's also a [Lambda](#lambda-list-only-scanner-and-on-demand-deleter) variant
+for running the scan (and, optionally, the delete) on demand without a
+local Python/PowerShell setup — two separate functions, never chained
+automatically: a scanner that only ever lists, and a deleter that defaults
+to preview-only until you explicitly confirm.
 
 ## How It Works
 
@@ -304,50 +306,116 @@ what deletion actually does.
 
 ---
 
-## Lambda (List-Only Scanner)
+## Lambda (List-Only Scanner and On-Demand Deleter)
 
-`lambda_function.py` is an on-demand AWS Lambda port of the pull side only —
-**it never deletes anything.** It scans Endpoint Inventory and returns the
-matches in its response; you review that list and then delete separately and
-explicitly using `delete_offline_endpoints.py` or
-`Remove-OfflineEndpoints.ps1`, pointed at the returned `agentGuid` values.
-There is no automatic or scheduled trigger and no chained delete step.
+Two on-demand Lambda functions, invoked independently — **never chained
+automatically:**
 
-It's stdlib-only (`urllib`, not `requests`), so it deploys as a single file
-with no dependency layer.
+- `lambda_function.py` (`offline-endpoint-scanner`) — scans Endpoint
+  Inventory and returns the matches. **Never deletes anything.** Optionally
+  writes the match list to S3 and publishes a summary to SNS (email/etc.).
+- `lambda_delete_function.py` (`offline-endpoint-deleter`) — reads an
+  endpoint CSV from S3 (normally the one the scanner just wrote) and deletes
+  those endpoints. **Defaults to preview-only:** invoke it without
+  `"confirm": true` and it only reports what *would* be deleted, without
+  calling the delete API at all. Nothing is ever deleted on a first/default
+  invoke — you must explicitly re-invoke with `"confirm": true` to actually
+  delete. This mirrors the local scripts' two-step "type yes twice" prompt,
+  just as two separate deliberate invokes instead of two `Read-Host` prompts.
+
+Both are stdlib-only for the Vision One API calls (`urllib`, not
+`requests`); the S3/SNS integration uses `boto3`, which ships built into
+every AWS-provided Python Lambda runtime. So both still deploy as a single
+file each, with no dependency layer.
 
 ### Deploy (One Time)
 
+**1. Package both functions:**
 ```bash
-zip function.zip lambda_function.py
+zip scanner.zip lambda_function.py
+zip deleter.zip lambda_delete_function.py
+```
 
+**2. Create an S3 bucket** (holds scan results and delete audit trails):
+```bash
+aws s3 mb s3://<your-bucket-name>
+```
+
+**3. Create an SNS topic and subscribe your email:**
+```bash
+TOPIC_ARN=$(aws sns create-topic --name offline-endpoint-notifications --query TopicArn --output text)
+aws sns subscribe --topic-arn "$TOPIC_ARN" --protocol email --notification-endpoint you@example.com
+```
+AWS emails you a confirmation link — you won't receive notifications until
+you click it.
+
+**4. Create an execution role + policy for the scanner** (CloudWatch Logs,
+plus `s3:PutObject` scoped to `scans/*`, plus `sns:Publish`):
+```bash
 aws iam create-role --role-name offline-endpoint-scanner-role \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 aws iam attach-role-policy --role-name offline-endpoint-scanner-role \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam put-role-policy --role-name offline-endpoint-scanner-role \
+  --policy-name scanner-s3-sns --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {\"Effect\": \"Allow\", \"Action\": \"s3:PutObject\", \"Resource\": \"arn:aws:s3:::<your-bucket-name>/scans/*\"},
+      {\"Effect\": \"Allow\", \"Action\": \"sns:Publish\", \"Resource\": \"$TOPIC_ARN\"}
+    ]
+  }"
+```
 
+**5. Create an execution role + policy for the deleter** (CloudWatch Logs,
+plus `s3:GetObject`/`s3:PutObject` across the bucket — it reads scan CSVs
+and writes results next to them — plus `sns:Publish`):
+```bash
+aws iam create-role --role-name offline-endpoint-deleter-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam attach-role-policy --role-name offline-endpoint-deleter-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam put-role-policy --role-name offline-endpoint-deleter-role \
+  --policy-name deleter-s3-sns --policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {\"Effect\": \"Allow\", \"Action\": [\"s3:GetObject\", \"s3:PutObject\"], \"Resource\": \"arn:aws:s3:::<your-bucket-name>/*\"},
+      {\"Effect\": \"Allow\", \"Action\": \"sns:Publish\", \"Resource\": \"$TOPIC_ARN\"}
+    ]
+  }"
+```
+IAM roles can take 10-20 seconds to propagate — if function creation below
+fails with "role cannot be assumed," just retry.
+
+**6. Create both functions:**
+```bash
 aws lambda create-function --function-name offline-endpoint-scanner \
   --runtime python3.13 --handler lambda_function.lambda_handler \
-  --zip-file fileb://function.zip \
+  --zip-file fileb://scanner.zip \
   --role arn:aws:iam::<account-id>:role/offline-endpoint-scanner-role \
   --timeout 300 \
-  --environment "Variables={TMV1_TOKEN=<your Vision One API key>,TMV1_REGION_URL=https://api.xdr.trendmicro.com}"
+  --environment "Variables={TMV1_TOKEN=<your Vision One API key>,TMV1_REGION_URL=https://api.xdr.trendmicro.com,RESULTS_BUCKET=<your-bucket-name>,SNS_TOPIC_ARN=$TOPIC_ARN}"
+
+aws lambda create-function --function-name offline-endpoint-deleter \
+  --runtime python3.13 --handler lambda_delete_function.lambda_handler \
+  --zip-file fileb://deleter.zip \
+  --role arn:aws:iam::<account-id>:role/offline-endpoint-deleter-role \
+  --timeout 300 \
+  --environment "Variables={TMV1_TOKEN=<your Vision One API key>,TMV1_REGION_URL=https://api.xdr.trendmicro.com,SNS_TOPIC_ARN=$TOPIC_ARN}"
 ```
+The deleter's token needs **Endpoint Inventory → Remove agents** in
+addition to **View** — the scanner's only needs **View**. No VPC is needed
+for either (the Vision One API is public). The default 3-second Lambda
+timeout is nowhere near enough for a full paginated scan or a large delete
+batch — `--timeout 300` gives 5 minutes; adjust to your tenant's endpoint
+count.
 
-No VPC is needed (the Vision One API is public). The default 3-second Lambda
-timeout is nowhere near enough for a full paginated scan — `--timeout 300`
-above gives it 5 minutes; adjust to your tenant's endpoint count. The
-execution role only needs `AWSLambdaBasicExecutionRole` (CloudWatch Logs) —
-nothing else, since deleting isn't part of this function.
-
-To update the code later:
-
+To update code later:
 ```bash
-zip function.zip lambda_function.py
-aws lambda update-function-code --function-name offline-endpoint-scanner --zip-file fileb://function.zip
+zip scanner.zip lambda_function.py && aws lambda update-function-code --function-name offline-endpoint-scanner --zip-file fileb://scanner.zip
+zip deleter.zip lambda_delete_function.py && aws lambda update-function-code --function-name offline-endpoint-deleter --zip-file fileb://deleter.zip
 ```
 
-### Invoke
+### Invoke — Scanning
 
 ```bash
 # Defaults (hostnamePrefix=iws, offlineHours=8, osPlatform=windows)
@@ -362,9 +430,42 @@ aws lambda invoke --function-name offline-endpoint-scanner \
 ```
 
 The response body is JSON: `scanned`, `matchCount`, `matches` (each with
-`endpointName`, `agentGuid`, `lastSeenUtc`, `offlineHours`, etc.), and a
-`note` reiterating that nothing was deleted. See
+`endpointName`, `agentGuid`, `lastSeenUtc`, `offlineHours`, etc.),
+`s3Bucket`/`s3Key` (if `RESULTS_BUCKET` is set and there were matches), and a
+`note` reiterating that nothing was deleted. If `SNS_TOPIC_ARN` is set, you
+also get an email with a summary, a preview of the first 25 matches, and the
+`s3Bucket`/`s3Key` to hand to the deleter — sent even on zero-match runs, so
+you always know the scan ran. See
 [Configuration Reference](#configuration-reference) for what each parameter
 means — `hostnamePrefix`, `offlineHours`, `osPlatform`, and `pageSize` map
 directly to the Python/PowerShell equivalents, just as event-payload keys
 instead of constants/flags.
+
+### Invoke — Deleting
+
+Using the `s3Key` from the scanner's response or notification email:
+
+```bash
+# 1. Preview -- reports what would be deleted, calls no delete API at all
+aws lambda invoke --function-name offline-endpoint-deleter \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"s3Bucket": "<your-bucket-name>", "s3Key": "scans/iws-20260710T120000Z.csv"}' \
+  response.json
+cat response.json
+
+# 2. Actually delete -- same payload, plus confirm
+aws lambda invoke --function-name offline-endpoint-deleter \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"s3Bucket": "<your-bucket-name>", "s3Key": "scans/iws-20260710T120000Z.csv", "confirm": true}' \
+  response.json
+```
+
+The confirmed-delete response is JSON: `count`, `succeeded`, `failed`,
+`timedOut`, and `results` (per-endpoint `finalStatus` / `actionTaken`,
+matching the local scripts' audit-trail columns) — also written to
+`s3://<bucket>/<key>-delete-results.csv` and, if `SNS_TOPIC_ARN` is set,
+emailed as a completion summary.
+
+See [Deleting Endpoints](#deleting-endpoints) above for what deletion
+actually does (Endpoint Inventory record only, not the physical agent) and
+required API key permissions.

@@ -15,6 +15,10 @@ Both do exactly the same thing and share the rest of this document (how it
 works, permissions, regional URLs, deleting-endpoints behavior). Only the
 setup/invocation commands differ.
 
+There's also a [Lambda](#lambda-list-only-scanner) variant — **listing
+only, no delete step** — for running the scan on demand without a local
+Python/PowerShell setup.
+
 ## How It Works
 
 Calls `GET /v3.0/endpointSecurity/endpoints` (Endpoint Security → Get endpoint
@@ -297,3 +301,70 @@ pwsh ./Remove-OfflineEndpoints.ps1 -Verify      # skip straight to the delete co
 
 See [Deleting Endpoints](#deleting-endpoints) above for the safety model and
 what deletion actually does.
+
+---
+
+## Lambda (List-Only Scanner)
+
+`lambda_function.py` is an on-demand AWS Lambda port of the pull side only —
+**it never deletes anything.** It scans Endpoint Inventory and returns the
+matches in its response; you review that list and then delete separately and
+explicitly using `delete_offline_endpoints.py` or
+`Remove-OfflineEndpoints.ps1`, pointed at the returned `agentGuid` values.
+There is no automatic or scheduled trigger and no chained delete step.
+
+It's stdlib-only (`urllib`, not `requests`), so it deploys as a single file
+with no dependency layer.
+
+### Deploy (One Time)
+
+```bash
+zip function.zip lambda_function.py
+
+aws iam create-role --role-name offline-endpoint-scanner-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam attach-role-policy --role-name offline-endpoint-scanner-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+aws lambda create-function --function-name offline-endpoint-scanner \
+  --runtime python3.13 --handler lambda_function.lambda_handler \
+  --zip-file fileb://function.zip \
+  --role arn:aws:iam::<account-id>:role/offline-endpoint-scanner-role \
+  --timeout 300 \
+  --environment "Variables={TMV1_TOKEN=<your Vision One API key>,TMV1_REGION_URL=https://api.xdr.trendmicro.com}"
+```
+
+No VPC is needed (the Vision One API is public). The default 3-second Lambda
+timeout is nowhere near enough for a full paginated scan — `--timeout 300`
+above gives it 5 minutes; adjust to your tenant's endpoint count. The
+execution role only needs `AWSLambdaBasicExecutionRole` (CloudWatch Logs) —
+nothing else, since deleting isn't part of this function.
+
+To update the code later:
+
+```bash
+zip function.zip lambda_function.py
+aws lambda update-function-code --function-name offline-endpoint-scanner --zip-file fileb://function.zip
+```
+
+### Invoke
+
+```bash
+# Defaults (hostnamePrefix=iws, offlineHours=8, osPlatform=windows)
+aws lambda invoke --function-name offline-endpoint-scanner response.json
+cat response.json
+
+# Overriding parameters per invocation
+aws lambda invoke --function-name offline-endpoint-scanner \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"hostnamePrefix": "corp", "offlineHours": 24, "osPlatform": "linux"}' \
+  response.json
+```
+
+The response body is JSON: `scanned`, `matchCount`, `matches` (each with
+`endpointName`, `agentGuid`, `lastSeenUtc`, `offlineHours`, etc.), and a
+`note` reiterating that nothing was deleted. See
+[Configuration Reference](#configuration-reference) for what each parameter
+means — `hostnamePrefix`, `offlineHours`, `osPlatform`, and `pageSize` map
+directly to the Python/PowerShell equivalents, just as event-payload keys
+instead of constants/flags.

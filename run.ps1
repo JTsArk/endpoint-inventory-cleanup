@@ -63,7 +63,15 @@ if ([string]::IsNullOrWhiteSpace($env:TMV1_TOKEN)) {
 
 if ($args.Count -gt 0 -and $args[0] -like "*.ps1") {
     $scriptName = $args[0]
-    $forwardArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+    # Wrap the whole if/else in @(...): PowerShell unwraps a single-element
+    # array returned from a statement (if/else, like a function return) back
+    # into a bare scalar. Without this, "-Verify" alone as the only forwarded
+    # arg collapses from a 1-item array into the plain string "-Verify", and
+    # `& $script @forwardArgs` then splats a STRING, which enumerates it
+    # character-by-character ('-', 'V', 'e', ...) instead of passing it as one
+    # switch argument -- producing "A positional parameter cannot be found
+    # that accepts argument 'i'" from the child script's positional params.
+    $forwardArgs = @(if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() })
 } else {
     $scriptName = "Get-OfflineEndpoints.ps1"
     $forwardArgs = $args

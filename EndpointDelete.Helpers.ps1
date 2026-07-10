@@ -160,8 +160,17 @@ function Invoke-DeleteFlow {
     # a non-interactive stdin (cron, CI, redirected input) -- Read-Host would
     # either throw or silently consume unrelated redirected data. Bail out
     # safely instead, regardless of -SkipFirstPrompt.
-    if ([Console]::IsInputRedirected) {
-        Write-Host "`nNon-interactive session detected; skipping the delete prompt for these $($Endpoints.Count) endpoint(s). Re-run interactively (e.g. Remove-OfflineEndpoints.ps1 -Verify) to delete them."
+    #
+    # [Console]::IsInputRedirected is a known false positive under the
+    # PowerShell ISE and the VS Code PowerShell extension's Integrated
+    # Console: neither gives the process a real console (ISE has none; VS
+    # Code talks to it over a named pipe), so this API reports $true even
+    # though a person is sitting there and Read-Host works fine. Recognize
+    # those hosts by name so a real interactive user isn't blocked; genuine
+    # redirection (cron, CI, `... | pwsh script.ps1`) still bails out below.
+    $isKnownInteractiveHost = $Host.Name -in @("Windows PowerShell ISE Host", "Visual Studio Code Host")
+    if ([Console]::IsInputRedirected -and -not $isKnownInteractiveHost) {
+        Write-Host "`nNon-interactive session detected ($($Host.Name)); skipping the delete prompt for these $($Endpoints.Count) endpoint(s). Re-run from an interactive terminal (a plain console window, not a redirected/piped session) to delete them."
         return $false
     }
 

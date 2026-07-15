@@ -182,6 +182,29 @@ it in your `.env` if your tenant is in another region.
 
 ---
 
+## GUID Naming Reference
+
+Same value everywhere — only the label changes depending on where you're
+looking. Vision One's platform-level ID is aligned with whatever the
+underlying protection product's own identifier is, once that product syncs
+into Endpoint Inventory (per Trend Micro KB
+[KA-0013288](https://success.trendmicro.com/en-US/solution/KA-0013288)).
+
+| Where you see it | What it's called |
+|---|---|
+| This tool's CSV output (`agentGuid` column) | `agentGuid` |
+| This tool's console output (e.g. `IWSJT3 (agentGuid 843d1055-...)`) | `agentGuid` |
+| Vision One API (`GET /v3.0/endpointSecurity/endpoints`) | `agentGuid` |
+| Vision One → Endpoint Inventory console | **Endpoint GUID** |
+| Server & Workload Protection console | **Host GUID** |
+
+**Rule of thumb:** take the `agentGuid` from this tool's CSV or console
+output, search for it in the Vision One console / Endpoint Inventory as
+"Endpoint GUID," and in the Server & Workload Protection / Computers console
+(Host GUID column) as "Host GUID" — same value either way.
+
+---
+
 ## Python
 
 ### Setup (One Time)

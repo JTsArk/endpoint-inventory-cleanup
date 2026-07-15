@@ -89,8 +89,9 @@ function Get-EndpointsFromCsv([string]$path) {
     $endpoints = foreach ($row in $rows) {
         if ([string]::IsNullOrWhiteSpace($row.agentGuid)) { continue }
         [pscustomobject]@{
-            endpointName = [string]$row.endpointName
-            agentGuid    = [string]$row.agentGuid
+            endpointName              = [string]$row.endpointName
+            agentGuid                 = [string]$row.agentGuid
+            eppAgentProtectionManager = [string]$row.eppAgentProtectionManager
         }
     }
     return @($endpoints)

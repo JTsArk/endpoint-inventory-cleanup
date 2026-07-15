@@ -76,7 +76,10 @@ function Invoke-RestMethodWithBackoff {
 }
 
 # POST one batch (<=1000 items) to /endpoints/delete. Returns a list of
-# per-item objects aligned with $Batch: @{ taskId; error }.
+# per-item objects aligned with $Batch: @{ taskId; httpStatus; errorCode; errorMessage }.
+# httpStatus/errorCode/errorMessage are kept as separate fields (rather than one
+# packed string) so a short/empty API message doesn't collapse into something
+# like "400 :" -- which some CSV viewers (Excel) misread as a duration.
 function Submit-DeleteBatch {
     param($BaseUrl, [hashtable]$Headers, $Batch)
 
@@ -102,10 +105,10 @@ function Submit-DeleteBatch {
         if ($item.status -eq 202) {
             $opLocation = ($item.headers | Where-Object { $_.name -eq "Operation-Location" } | Select-Object -First 1).value
             $taskId = if ($opLocation) { ($opLocation -split "/")[-1] } else { $null }
-            [pscustomobject]@{ taskId = $taskId; error = $null }
+            [pscustomobject]@{ taskId = $taskId; httpStatus = 202; errorCode = $null; errorMessage = $null }
         } else {
             $err = $item.body.error
-            [pscustomobject]@{ taskId = $null; error = ("{0} {1}: {2}" -f $item.status, $err.code, $err.message).Trim() }
+            [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $err.code; errorMessage = $err.message }
         }
     }
 }
@@ -122,16 +125,17 @@ function Wait-DeleteTask {
             $body = Invoke-RestMethodWithBackoff -Uri $uri -Headers $Headers -Method Get -TimeoutSec 60
         } catch {
             $status = $_.Exception.Response.StatusCode.value__
-            return @{ status = "unknown"; errorMessage = "$status`: $($_.Exception.Message)" }
+            return @{ status = "unknown"; httpStatus = $status; errorCode = $null; errorMessage = $_.Exception.Message }
         }
 
         if ($body.status -in @("succeeded", "failed")) {
+            $errorCode    = if ($body.status -eq "failed") { $body.error.code }    else { $null }
             $errorMessage = if ($body.status -eq "failed") { $body.error.message } else { "" }
-            return @{ status = $body.status; errorMessage = $errorMessage }
+            return @{ status = $body.status; httpStatus = $null; errorCode = $errorCode; errorMessage = $errorMessage }
         }
 
         if ((Get-Date) -ge $deadline) {
-            return @{ status = "timeout"; errorMessage = "still '$($body.status)' after $($script:PollTimeoutSeconds)s" }
+            return @{ status = "timeout"; httpStatus = $null; errorCode = $null; errorMessage = "still '$($body.status)' after $($script:PollTimeoutSeconds)s" }
         }
 
         Start-Sleep -Seconds $script:PollIntervalSeconds
@@ -218,15 +222,18 @@ function Invoke-DeleteFlow {
         $ep = $Endpoints[$i]
         $submitted = $submitResults[$i]
 
-        if ($submitted.error) {
-            Write-Host ("  {0,-30} -> submit failed: {1}" -f $ep.endpointName, $submitted.error)
+        if ($submitted.httpStatus -ne 202) {
+            Write-Host ("  {0,-30} -> submit failed: {1} {2}: {3}" -f $ep.endpointName, $submitted.httpStatus, $submitted.errorCode, $submitted.errorMessage)
             $finalResults.Add([pscustomobject]@{
-                endpointName = $ep.endpointName
-                agentGuid    = $ep.agentGuid
-                taskId       = ""
-                finalStatus  = "not_submitted"
-                errorMessage = $submitted.error
-                actionTaken  = $script:ActionTakenByStatus["not_submitted"]
+                endpointName              = $ep.endpointName
+                agentGuid                 = $ep.agentGuid
+                eppAgentProtectionManager = $ep.eppAgentProtectionManager
+                taskId                    = ""
+                finalStatus               = "not_submitted"
+                httpStatus                = $submitted.httpStatus
+                errorCode                 = $submitted.errorCode
+                errorMessage              = $submitted.errorMessage
+                actionTaken               = $script:ActionTakenByStatus["not_submitted"]
             })
             continue
         }
@@ -236,12 +243,15 @@ function Invoke-DeleteFlow {
         Write-Host ("  {0,-30} -> task {1}{2}" -f $ep.endpointName, $result.status, $suffix)
         $actionTaken = if ($script:ActionTakenByStatus.ContainsKey($result.status)) { $script:ActionTakenByStatus[$result.status] } else { $result.status }
         $finalResults.Add([pscustomobject]@{
-            endpointName = $ep.endpointName
-            agentGuid    = $ep.agentGuid
-            taskId       = $submitted.taskId
-            finalStatus  = $result.status
-            errorMessage = $result.errorMessage
-            actionTaken  = $actionTaken
+            endpointName              = $ep.endpointName
+            agentGuid                 = $ep.agentGuid
+            eppAgentProtectionManager = $ep.eppAgentProtectionManager
+            taskId                    = $submitted.taskId
+            finalStatus               = $result.status
+            httpStatus                = $result.httpStatus
+            errorCode                 = $result.errorCode
+            errorMessage              = $result.errorMessage
+            actionTaken               = $actionTaken
         })
     }
 

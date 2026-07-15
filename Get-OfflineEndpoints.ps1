@@ -159,15 +159,16 @@ while ($uri) {
         # be named $offlineHours (that would alias the $OfflineHours parameter).
         $hoursOffline = [math]::Round(($now - $seen).TotalHours, 1)
         $results.Add([pscustomobject]@{
-            endpointName          = $name
-            agentGuid             = $ep.agentGuid
-            type                  = $ep.type
-            osName                = $ep.osName
-            ipAddresses           = ($ep.ipAddresses -join ", ")
-            eppAgentStatus        = $ep.eppAgent.status
-            edrSensorConnectivity = $ep.edrSensor.connectivity
-            lastSeenUtc           = $seen.ToString("o")
-            offlineHours          = $hoursOffline
+            endpointName              = $name
+            agentGuid                 = $ep.agentGuid
+            type                      = $ep.type
+            osName                    = $ep.osName
+            ipAddresses               = ($ep.ipAddresses -join ", ")
+            eppAgentStatus            = $ep.eppAgent.status
+            eppAgentProtectionManager = $ep.eppAgent.protectionManager
+            edrSensorConnectivity     = $ep.edrSensor.connectivity
+            lastSeenUtc               = $seen.ToString("o")
+            offlineHours              = $hoursOffline
         })
     }
 

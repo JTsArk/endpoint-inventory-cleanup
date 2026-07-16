@@ -29,17 +29,27 @@ $script:DeleteMaxRetries = 5
 $script:DeleteBackoffBaseSeconds = 1.0
 $script:DeleteRetryableStatusCodes = 429, 500, 502, 503, 504
 
-# Invoke-RestMethod with retry + exponential backoff on 429/5xx. Honors the
-# Retry-After header when the API sends one; otherwise backs off exponentially
-# (1s, 2s, 4s, ...) with a little jitter to avoid retry storms. Non-retryable
-# errors are re-thrown immediately for the caller to handle.
+# Invoke-RestMethod with retry + exponential backoff. Honors the Retry-After
+# header when the API sends one; otherwise backs off exponentially (1s, 2s,
+# 4s, ...) with a little jitter to avoid retry storms. Non-retryable errors
+# are re-thrown immediately for the caller to handle.
+#
+# -RetryableStatusCodes defaults to 429/5xx (safe for read-only GET calls,
+# which have no side effects to duplicate). Callers making a MUTATING call
+# (e.g. the delete submission POST) should pass a narrower list -- see
+# Submit-DeleteBatch, which only retries 429 there: a 500/502/503/504 can
+# mean the request already reached and was processed by the backend, with
+# only the *response* lost in transit (a gateway blip, timeout, etc.).
+# Blindly resubmitting in that case risks a confusing duplicate submission
+# against an endpoint that was already, successfully, deleted.
 function Invoke-RestMethodWithBackoff {
     param(
         [string]$Uri,
         [hashtable]$Headers,
         [string]$Method = "Get",
         $Body = $null,
-        [int]$TimeoutSec = 60
+        [int]$TimeoutSec = 60,
+        [int[]]$RetryableStatusCodes = $script:DeleteRetryableStatusCodes
     )
 
     for ($attempt = 0; $attempt -le $script:DeleteMaxRetries; $attempt++) {
@@ -52,7 +62,7 @@ function Invoke-RestMethodWithBackoff {
             $response = $_.Exception.Response
             $status = if ($response) { [int]$response.StatusCode } else { $null }
 
-            if (-not $status -or $script:DeleteRetryableStatusCodes -notcontains $status -or $attempt -eq $script:DeleteMaxRetries) {
+            if (-not $status -or $RetryableStatusCodes -notcontains $status -or $attempt -eq $script:DeleteMaxRetries) {
                 throw
             }
 
@@ -88,10 +98,14 @@ function Submit-DeleteBatch {
     $bodyJson = $body | ConvertTo-Json -AsArray -Depth 3
 
     try {
-        $resp = Invoke-RestMethodWithBackoff -Uri $uri -Headers $Headers -Method Post -Body $bodyJson -TimeoutSec 60
+        # Only retry on 429 here -- see the note on Invoke-RestMethodWithBackoff.
+        $resp = Invoke-RestMethodWithBackoff -Uri $uri -Headers $Headers -Method Post -Body $bodyJson -TimeoutSec 60 -RetryableStatusCodes @(429)
     } catch {
         $status = $_.Exception.Response.StatusCode.value__
-        Write-Error "API error $status submitting delete batch: $($_.Exception.Message)"
+        $note = if ($status -in @(500, 502, 503, 504)) {
+            " This status can mean the request was already received and processed by the server even though the response failed -- check Vision One's Audit Logs for this batch before re-running, to avoid a confusing duplicate submission."
+        } else { "" }
+        Write-Error "API error $status submitting delete batch: $($_.Exception.Message)$note"
         exit 1
     }
 
@@ -107,8 +121,31 @@ function Submit-DeleteBatch {
             $taskId = if ($opLocation) { ($opLocation -split "/")[-1] } else { $null }
             [pscustomobject]@{ taskId = $taskId; httpStatus = 202; errorCode = $null; errorMessage = $null }
         } else {
-            $err = $item.body.error
-            [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $err.code; errorMessage = $err.message }
+            # code/message live directly on body -- e.g.
+            #   {"status":404,"body":{"code":"NotFound","message":"Endpoint not found"}}
+            # NOT nested under body.error as the bundled OpenAPI spec claims (confirmed
+            # against the live API; the spec is wrong here). body has also been observed
+            # as an escaped JSON string instead of a parsed object. Try the real shape
+            # first, fall back to the spec's documented shape in case some other error
+            # path actually does nest it, and if neither yields anything, fall back to
+            # the raw item so a failure is never silently reported with a blank message.
+            $itemBody = $item.body
+            if ($itemBody -is [string]) {
+                try { $itemBody = $itemBody | ConvertFrom-Json } catch { $itemBody = $null }
+            }
+            $code = $itemBody.code
+            $message = $itemBody.message
+            if (-not ($code -or $message)) {
+                $code = $itemBody.error.code
+                $message = $itemBody.error.message
+            }
+
+            if ($code -or $message) {
+                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $code; errorMessage = $message }
+            } else {
+                $raw = if ($null -ne $item.body) { $item.body | ConvertTo-Json -Depth 5 -Compress } else { "(no error body returned)" }
+                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $null; errorMessage = $raw }
+            }
         }
     }
 }

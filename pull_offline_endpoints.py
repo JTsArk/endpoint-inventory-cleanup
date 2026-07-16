@@ -18,6 +18,12 @@ date range / greater-than operator. Therefore:
 
 "Offline" is determined from the most recent of the agent / sensor last-connected
 timestamps. If that time is more than OFFLINE_HOURS ago, the endpoint is offline.
+Endpoints with NO last-connected timestamp at all (neither agent nor sensor has
+ever reported one) are also included -- there's no timestamp to compare against
+OFFLINE_HOURS, so these are treated as offline unconditionally rather than
+skipped. lastSeenUtc/offlineHours are blank for these rows. Note this can also
+catch a brand-new endpoint that hasn't checked in yet for a legitimate reason
+(just provisioned, not yet booted) -- review the list before confirming delete.
 
 DELETING
 --------
@@ -181,13 +187,12 @@ def main():
             continue
 
         seen = last_seen(ep)
-        # Skip endpoints with no last-connected timestamp (never reported /
-        # no telemetry) — we only flag hosts with a real connection time
-        # that is older than the cutoff.
-        if seen is None:
-            continue
-        if seen > cutoff:
-            continue  # connected within the last 8h -> still online
+        # No last-connected timestamp at all -> treat as offline unconditionally
+        # (nothing to compare against OFFLINE_HOURS). Otherwise, still connected
+        # within the window -> skip; only offline >= OFFLINE_HOURS (or no
+        # telemetry) continues on to be included below.
+        if seen is not None and seen > cutoff:
+            continue  # connected within the offline-hours window -> still online
 
         epp = ep.get("eppAgent") or {}
         edr = ep.get("edrSensor") or {}
@@ -199,8 +204,9 @@ def main():
             "osName": ep.get("osName", ""),
             "ipAddresses": ", ".join(ep.get("ipAddresses", []) or []),
             "eppAgentStatus": epp.get("status", ""),
+            "eppAgentProtectionManager": epp.get("protectionManager", ""),
             "edrSensorConnectivity": edr.get("connectivity", ""),
-            "lastSeenUtc": seen.isoformat() if seen else "never",
+            "lastSeenUtc": seen.isoformat() if seen else "",
             "offlineHours": round(offline_for.total_seconds() / 3600, 1) if offline_for else "",
         })
 
@@ -220,10 +226,19 @@ def main():
 
         # Console preview
         for m in matches:
-            print(f"  {m['endpointName']:<30} last seen {m['lastSeenUtc']:<28} "
-                  f"offline {m['offlineHours']}h  ({m['agentGuid']})")
+            last_seen_display = m["lastSeenUtc"] if m["lastSeenUtc"] else "(no telemetry)"
+            offline_hours_display = f"{m['offlineHours']}h" if m["offlineHours"] != "" else "n/a"
+            print(f"  {m['endpointName']:<30} last seen {last_seen_display:<28} "
+                  f"offline {offline_hours_display}  ({m['agentGuid']})")
 
-        delete_candidates = [{"endpointName": m["endpointName"], "agentGuid": m["agentGuid"]} for m in matches]
+        delete_candidates = [
+            {
+                "endpointName": m["endpointName"],
+                "agentGuid": m["agentGuid"],
+                "eppAgentProtectionManager": m["eppAgentProtectionManager"],
+            }
+            for m in matches
+        ]
         endpoint_delete.run_delete_flow(delete_candidates, BASE_URL, TOKEN, DELETE_RESULTS_CSV)
     else:
         print("No matching endpoints found.")

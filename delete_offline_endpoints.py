@@ -83,7 +83,11 @@ def load_endpoints(csv_path):
             guid = (row.get("agentGuid") or "").strip()
             if not guid:
                 continue
-            endpoints.append({"endpointName": name, "agentGuid": guid})
+            endpoints.append({
+                "endpointName": name,
+                "agentGuid": guid,
+                "eppAgentProtectionManager": (row.get("eppAgentProtectionManager") or "").strip(),
+            })
     return endpoints
 
 

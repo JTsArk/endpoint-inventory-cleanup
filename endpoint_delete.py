@@ -10,6 +10,7 @@ API used: POST /v3.0/endpointSecurity/endpoints/delete, GET
 """
 
 import csv
+import json
 import random
 import sys
 import time
@@ -34,7 +35,10 @@ ACTION_TAKEN_BY_STATUS = {
     "unknown": "Delete status unknown (poll failed)",
 }
 
-# Retry/backoff for throttled (429) or transient (5xx) API responses.
+# Retry/backoff. This default set (429/5xx) is safe for read-only GET calls
+# (pulling endpoints, polling task status), which have no side effects to
+# duplicate. The delete-submission POST uses a narrower set -- see
+# submit_delete_batch.
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 1.0
 RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
@@ -44,16 +48,23 @@ RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
 # HTTP helpers
 # --------------------------------------------------------------------------- #
 
-def request_with_backoff(session, method, url, headers=None, params=None, json_body=None, timeout=60):
-    """Request with retry + exponential backoff on 429 (throttled) / transient 5xx.
+def request_with_backoff(session, method, url, headers=None, params=None, json_body=None, timeout=60,
+                          retryable_status_codes=RETRYABLE_STATUS_CODES):
+    """Request with retry + exponential backoff. Honors the Retry-After header
+    when the API sends one; otherwise backs off exponentially (1s, 2s, 4s,
+    ...) with a little jitter to avoid retry storms. Non-retryable errors are
+    returned immediately for the caller to handle.
 
-    Honors the Retry-After header when the API sends one; otherwise backs off
-    exponentially (1s, 2s, 4s, ...) with a little jitter to avoid retry storms.
-    Non-retryable errors are returned immediately for the caller to handle.
+    `retryable_status_codes` defaults to 429/5xx. Callers making a MUTATING
+    call (e.g. the delete submission POST) should pass a narrower set --
+    a 500/502/503/504 there can mean the request already reached and was
+    processed by the server, with only the *response* lost in transit.
+    Blindly resubmitting in that case risks a confusing duplicate submission
+    against an endpoint that was already, successfully, deleted.
     """
     for attempt in range(MAX_RETRIES + 1):
         resp = session.request(method, url, headers=headers, params=params, json=json_body, timeout=timeout)
-        if resp.status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
+        if resp.status_code not in retryable_status_codes or attempt == MAX_RETRIES:
             return resp
 
         retry_after = resp.headers.get("Retry-After")
@@ -86,15 +97,23 @@ def submit_delete_batch(session, base_url, headers, batch):
     """POST one batch (<=1000 items) to /endpoints/delete.
 
     Returns a list of per-item dicts aligned with `batch`:
-      {"taskId": str, "error": None}  on 202 Accepted, or
-      {"taskId": None, "error": "<code>: <message>"}  otherwise.
+      {"taskId": str, "httpStatus": 202, "errorCode": None, "errorMessage": None}  on 202 Accepted, or
+      {"taskId": None, "httpStatus": int, "errorCode": str, "errorMessage": str}  otherwise.
     """
     url = f"{base_url}{DELETE_PATH}"
     body = [{"agentGuid": ep["agentGuid"]} for ep in batch]
-    resp = request_with_backoff(session, "POST", url, headers=headers, json_body=body)
+    # Only retry on 429 here -- see the note on request_with_backoff.
+    resp = request_with_backoff(session, "POST", url, headers=headers, json_body=body,
+                                 retryable_status_codes=(429,))
 
     if resp.status_code != 207:
-        sys.exit(f"API error {resp.status_code} submitting delete batch: {resp.text}")
+        note = ""
+        if resp.status_code in (500, 502, 503, 504):
+            note = (" This status can mean the request was already received and processed by "
+                     "the server even though the response failed -- check Vision One's Audit "
+                     "Logs for this batch before re-running, to avoid a confusing duplicate "
+                     "submission.")
+        sys.exit(f"API error {resp.status_code} submitting delete batch: {resp.text}{note}")
 
     results = resp.json()
     if len(results) != len(batch):
@@ -110,33 +129,61 @@ def submit_delete_batch(session, base_url, headers, batch):
                 None,
             )
             task_id = task_id_from_operation_location(operation_location) if operation_location else None
-            out.append({"taskId": task_id, "error": None})
+            out.append({"taskId": task_id, "httpStatus": 202, "errorCode": None, "errorMessage": None})
         else:
-            body_err = (item.get("body") or {}).get("error", {})
-            err_msg = f"{status} {body_err.get('code', '')}: {body_err.get('message', '')}".strip()
-            out.append({"taskId": None, "error": err_msg})
+            # code/message live directly on body -- e.g.
+            #   {"status":404,"body":{"code":"NotFound","message":"Endpoint not found"}}
+            # NOT nested under body.error as the bundled OpenAPI spec claims (confirmed against
+            # the live API; the spec is wrong here). body has also been observed as a
+            # JSON-encoded string instead of a parsed object. Try the real shape first, fall back
+            # to the spec's documented shape in case some other error path actually does nest it,
+            # and if neither yields anything, fall back to the raw item so a failure is never
+            # silently reported with a blank message.
+            item_body = item.get("body")
+            if isinstance(item_body, str):
+                try:
+                    item_body = json.loads(item_body)
+                except (ValueError, TypeError):
+                    item_body = None
+            item_body = item_body or {}
+            code = item_body.get("code")
+            message = item_body.get("message")
+            if not (code or message):
+                nested_err = item_body.get("error") or {}
+                code = nested_err.get("code")
+                message = nested_err.get("message")
+
+            if code or message:
+                out.append({"taskId": None, "httpStatus": status, "errorCode": code, "errorMessage": message})
+            else:
+                raw = json.dumps(item.get("body")) if item.get("body") is not None else "(no error body returned)"
+                out.append({"taskId": None, "httpStatus": status, "errorCode": None, "errorMessage": raw})
     return out
 
 
 def poll_task(session, base_url, headers, task_id):
-    """Poll a delete task until it reaches a terminal status or times out."""
+    """Poll a delete task until it reaches a terminal status or times out.
+
+    Returns (status, httpStatus, errorCode, errorMessage).
+    """
     url = f"{base_url}{TASK_PATH.format(id=task_id)}"
     deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
 
     while True:
         resp = request_with_backoff(session, "GET", url, headers=headers)
         if resp.status_code != 200:
-            return "unknown", f"{resp.status_code}: {resp.text}"
+            return "unknown", resp.status_code, None, resp.text
 
         body = resp.json()
         status = body.get("status")
         if status in ("succeeded", "failed"):
             error = body.get("error") or {}
+            error_code = error.get("code") if status == "failed" else None
             error_msg = error.get("message", "") if status == "failed" else ""
-            return status, error_msg
+            return status, None, error_code, error_msg
 
         if time.monotonic() >= deadline:
-            return "timeout", f"still {status!r} after {POLL_TIMEOUT_SECONDS}s"
+            return "timeout", None, None, f"still {status!r} after {POLL_TIMEOUT_SECONDS}s"
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -202,20 +249,26 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
     # Poll each accepted task to a terminal status, printing progress by name.
     print()
     for ep, submitted in zip(endpoints, results):
-        if submitted["error"]:
-            print(f"  {ep['endpointName']:<30} -> submit failed: {submitted['error']}")
+        if submitted["httpStatus"] != 202:
+            print(f"  {ep['endpointName']:<30} -> submit failed: "
+                  f"{submitted['httpStatus']} {submitted['errorCode']}: {submitted['errorMessage']}")
             submitted["finalStatus"] = "not_submitted"
-            submitted["errorMessage"] = submitted["error"]
             continue
 
-        final_status, error_msg = poll_task(session, base_url, headers, submitted["taskId"])
+        final_status, http_status, error_code, error_msg = poll_task(session, base_url, headers, submitted["taskId"])
         submitted["finalStatus"] = final_status
+        submitted["httpStatus"] = http_status
+        submitted["errorCode"] = error_code
         submitted["errorMessage"] = error_msg
         suffix = f": {error_msg}" if error_msg else ""
         print(f"  {ep['endpointName']:<30} -> task {final_status}{suffix}")
 
-    # Write the audit-trail CSV.
-    fieldnames = ["endpointName", "agentGuid", "taskId", "finalStatus", "errorMessage", "actionTaken"]
+    # Write the audit-trail CSV. httpStatus/errorCode/errorMessage are kept as
+    # separate columns (rather than one packed string) so a short/empty API
+    # message doesn't collapse into something like "400 :" -- which some CSV
+    # viewers (Excel) misread as a duration.
+    fieldnames = ["endpointName", "agentGuid", "eppAgentProtectionManager", "taskId", "finalStatus",
+                  "httpStatus", "errorCode", "errorMessage", "actionTaken"]
     with open(results_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -224,9 +277,12 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
             writer.writerow({
                 "endpointName": ep["endpointName"],
                 "agentGuid": ep["agentGuid"],
+                "eppAgentProtectionManager": ep.get("eppAgentProtectionManager", ""),
                 "taskId": r.get("taskId") or "",
                 "finalStatus": final_status,
-                "errorMessage": r.get("errorMessage", ""),
+                "httpStatus": r.get("httpStatus") if r.get("httpStatus") is not None else "",
+                "errorCode": r.get("errorCode") or "",
+                "errorMessage": r.get("errorMessage") or "",
                 "actionTaken": ACTION_TAKEN_BY_STATUS.get(final_status, final_status),
             })
 

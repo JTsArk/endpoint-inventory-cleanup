@@ -31,14 +31,24 @@ date-range operator**. So the script:
 "Offline" is derived from the most recent of the agent and sensor
 last-connected times (`eppAgent.lastConnectedDateTime` /
 `edrSensor.lastConnectedDateTime`, both nested in the response and returned in
-UTC). Endpoints with no last-connected timestamp at all are skipped.
+UTC). Endpoints with no last-connected timestamp at all (neither agent nor
+sensor has ever reported one) are treated as offline too, rather than
+skipped — there's no timestamp to compare against the offline-hours
+threshold, so these are included unconditionally. `lastSeenUtc`/`offlineHours`
+are blank for these rows. Note this can also match a brand-new endpoint that
+hasn't checked in yet for a legitimate reason (just provisioned, not yet
+booted) — review the list before confirming delete.
 
-**Retry / backoff:** every API call (pulling endpoints and deleting them)
-retries automatically on `429` (throttled) or transient `500 / 502 / 503 /
-504` responses, up to 5 attempts. It honors the API's `Retry-After` header
-when present; otherwise it backs off exponentially (1s, 2s, 4s, ...) with a
-little random jitter to avoid retry storms. Any other error status is
-returned immediately without retrying.
+**Retry / backoff:** pulling endpoints and polling delete-task status retry
+automatically on `429` (throttled) or transient `500 / 502 / 503 / 504`
+responses, up to 5 attempts. It honors the API's `Retry-After` header when
+present; otherwise it backs off exponentially (1s, 2s, 4s, ...) with a little
+random jitter to avoid retry storms. The delete-*submission* call is
+narrower: it only retries on `429` — a `500/502/503/504` there can mean the
+request already reached and was processed by the server with only the
+response lost in transit, and blindly resubmitting risks a confusing
+duplicate submission against an endpoint already deleted by the first
+attempt. Any other error status is returned immediately without retrying.
 
 ## Deleting Endpoints
 

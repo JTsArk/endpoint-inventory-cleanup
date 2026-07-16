@@ -285,6 +285,32 @@ cp .env.example .env      # then edit .env and set TMV1_TOKEN + TMV1_REGION_URL
 chmod 600 .env            # restrict to your user (recommended)
 ```
 
+#### Troubleshooting: "running scripts is disabled on this system" (Windows)
+
+Windows blocks unsigned local `.ps1` scripts by default. If you hit this:
+
+```powershell
+# Bypass for just this run (no admin needed, no permanent change):
+pwsh -ExecutionPolicy Bypass -File .\run.ps1
+
+# Or allow it for your user going forward:
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+If the scripts were downloaded as a ZIP (rather than `git clone`'d), Windows
+marks every extracted file as "from the internet," which can still block
+them under `RemoteSigned`:
+
+```powershell
+Get-ChildItem -Path "." -Recurse | Unblock-File
+```
+
+If none of that works, the policy is likely locked by Group Policy
+(`Get-ExecutionPolicy -List` will show a restrictive `MachinePolicy` or
+`UserPolicy`) — common on managed corporate/server machines. Only IT/GPO can
+change that; the `-ExecutionPolicy Bypass` flag above still works since it's
+a per-invocation override, not a policy change.
+
 ### Usage
 
 Use the wrapper `run.ps1` (the PowerShell twin of `run.sh`) — it loads `.env`

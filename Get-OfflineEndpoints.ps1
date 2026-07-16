@@ -20,7 +20,13 @@
     last-connected timestamps (eppAgent.lastConnectedDateTime /
     edrSensor.lastConnectedDateTime). These are nested in the response and are
     returned in UTC with no timezone marker, so we treat them as UTC.
-    Endpoints with no last-connected timestamp at all are skipped.
+    Endpoints with NO last-connected timestamp at all (neither agent nor
+    sensor has ever reported one) are also included -- there's no timestamp
+    to compare against -OfflineHours, so these are treated as offline
+    unconditionally rather than skipped. lastSeenUtc/offlineHours are blank
+    for these rows. Note this can also catch a brand-new endpoint that
+    hasn't checked in yet for a legitimate reason (just provisioned, not yet
+    booted) -- review the list before confirming delete.
 
     Throttled (429) or transient (5xx) responses are retried with exponential
     backoff, honoring the Retry-After header when the API sends one.
@@ -152,12 +158,15 @@ while ($uri) {
         if (-not ($name -like "$HostnamePrefix*")) { continue }   # -like is case-insensitive
 
         $seen = Get-LastSeen $ep
-        if ($null -eq $seen)   { continue }   # no telemetry -> skip
-        if ($seen -gt $cutoff) { continue }   # connected within window -> still online
+        # No telemetry at all -> treat as offline unconditionally (nothing to
+        # compare against -OfflineHours). Otherwise, still connected within
+        # the window -> skip; only offline >= -OfflineHours (or no telemetry)
+        # continues on to be included below.
+        if ($null -ne $seen -and $seen -gt $cutoff) { continue }
 
         # NOTE: PowerShell variable names are case-insensitive, so this must NOT
         # be named $offlineHours (that would alias the $OfflineHours parameter).
-        $hoursOffline = [math]::Round(($now - $seen).TotalHours, 1)
+        $hoursOffline = if ($seen) { [math]::Round(($now - $seen).TotalHours, 1) } else { $null }
         $results.Add([pscustomobject]@{
             endpointName              = $name
             agentGuid                 = $ep.agentGuid
@@ -167,7 +176,7 @@ while ($uri) {
             eppAgentStatus            = $ep.eppAgent.status
             eppAgentProtectionManager = $ep.eppAgent.protectionManager
             edrSensorConnectivity     = $ep.edrSensor.connectivity
-            lastSeenUtc               = $seen.ToString("o")
+            lastSeenUtc               = if ($seen) { $seen.ToString("o") } else { "" }
             offlineHours              = $hoursOffline
         })
     }
@@ -186,8 +195,10 @@ if ($results.Count -gt 0) {
     $results | Export-Csv -Path $OutputCsv -Encoding utf8
     Write-Host ("Wrote {0} rows to {1}`n" -f $results.Count, $OutputCsv)
     foreach ($m in $results) {
-        Write-Host ("  {0,-30} last seen {1,-28} offline {2}h  ({3})" -f `
-            $m.endpointName, $m.lastSeenUtc, $m.offlineHours, $m.agentGuid)
+        $lastSeenDisplay = if ($m.lastSeenUtc) { $m.lastSeenUtc } else { "(no telemetry)" }
+        $offlineHoursDisplay = if ($null -ne $m.offlineHours) { "$($m.offlineHours)h" } else { "n/a" }
+        Write-Host ("  {0,-30} last seen {1,-28} offline {2}  ({3})" -f `
+            $m.endpointName, $lastSeenDisplay, $offlineHoursDisplay, $m.agentGuid)
     }
 
     Invoke-DeleteFlow -Endpoints $results -BaseUrl $BaseUrl -Token $Token -DeleteResultsCsv $DeleteResultsCsv | Out-Null

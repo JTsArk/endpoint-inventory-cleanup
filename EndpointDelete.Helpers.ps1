@@ -34,14 +34,17 @@ $script:DeleteRetryableStatusCodes = 429, 500, 502, 503, 504
 # 4s, ...) with a little jitter to avoid retry storms. Non-retryable errors
 # are re-thrown immediately for the caller to handle.
 #
-# -RetryableStatusCodes defaults to 429/5xx (safe for read-only GET calls,
-# which have no side effects to duplicate). Callers making a MUTATING call
-# (e.g. the delete submission POST) should pass a narrower list -- see
-# Submit-DeleteBatch, which only retries 429 there: a 500/502/503/504 can
-# mean the request already reached and was processed by the backend, with
-# only the *response* lost in transit (a gateway blip, timeout, etc.).
-# Blindly resubmitting in that case risks a confusing duplicate submission
-# against an endpoint that was already, successfully, deleted.
+# -RetryableStatusCodes defaults to 429/5xx. This default is also used for
+# the delete-submission POST (see Submit-DeleteBatch): a 500/502/503/504
+# there can mean the request already reached and was processed by the
+# backend, with only the *response* lost in transit -- but live-verified
+# behavior confirms resubmitting is safe even then. An agentGuid the first
+# attempt actually deleted comes back "404 NotFound" on retry (not a
+# duplicate action), and the API documents a "TaskError: Delete task
+# already in progress" conflict for one still mid-flight. A submission
+# that still fails after exhausting retries doesn't abort the run either --
+# see Submit-DeleteBatch, which records a not_submitted row per endpoint in
+# that batch instead.
 function Invoke-RestMethodWithBackoff {
     param(
         [string]$Uri,
@@ -90,6 +93,12 @@ function Invoke-RestMethodWithBackoff {
 # httpStatus/errorCode/errorMessage are kept as separate fields (rather than one
 # packed string) so a short/empty API message doesn't collapse into something
 # like "400 :" -- which some CSV viewers (Excel) misread as a duration.
+#
+# A batch-level failure (the submission POST itself errors, or the response
+# doesn't line up 1:1 with $Batch) does NOT abort the run -- it returns a
+# synthetic not_submitted row (errorCode "SubmitError") for every item in the
+# batch instead, so the caller still gets a complete CSV covering this batch
+# and goes on to attempt any remaining batches.
 function Submit-DeleteBatch {
     param($BaseUrl, [hashtable]$Headers, $Batch)
 
@@ -98,21 +107,27 @@ function Submit-DeleteBatch {
     $bodyJson = $body | ConvertTo-Json -AsArray -Depth 3
 
     try {
-        # Only retry on 429 here -- see the note on Invoke-RestMethodWithBackoff.
-        $resp = Invoke-RestMethodWithBackoff -Uri $uri -Headers $Headers -Method Post -Body $bodyJson -TimeoutSec 60 -RetryableStatusCodes @(429)
+        # Retries 429/5xx, same as read-only calls -- see the note on Invoke-RestMethodWithBackoff.
+        $resp = Invoke-RestMethodWithBackoff -Uri $uri -Headers $Headers -Method Post -Body $bodyJson -TimeoutSec 60
     } catch {
         $status = $_.Exception.Response.StatusCode.value__
         $note = if ($status -in @(500, 502, 503, 504)) {
-            " This status can mean the request was already received and processed by the server even though the response failed -- check Vision One's Audit Logs for this batch before re-running, to avoid a confusing duplicate submission."
+            " This batch was already retried $script:DeleteMaxRetries time(s) and still failed -- check Vision One's Audit Logs for this batch to see if it's a persistent issue before re-running. Resubmitting is safe (an endpoint the earlier attempt already deleted comes back 404 NotFound rather than a duplicate action)."
         } else { "" }
-        Write-Error "API error $status submitting delete batch: $($_.Exception.Message)$note"
-        exit 1
+        $errMessage = "$($_.Exception.Message)$note"
+        Write-Error "API error $status submitting delete batch: $errMessage" -ErrorAction Continue
+        return $Batch | ForEach-Object {
+            [pscustomobject]@{ taskId = $null; httpStatus = $status; errorCode = "SubmitError"; errorMessage = $errMessage }
+        }
     }
 
     $results = @($resp)
     if ($results.Count -ne $Batch.Count) {
-        Write-Error "API returned $($results.Count) results for a batch of $($Batch.Count) -- cannot reliably match results to endpoints."
-        exit 1
+        $msg = "API returned $($results.Count) results for a batch of $($Batch.Count) -- cannot reliably match results to endpoints."
+        Write-Error $msg -ErrorAction Continue
+        return $Batch | ForEach-Object {
+            [pscustomobject]@{ taskId = $null; httpStatus = $null; errorCode = "SubmitError"; errorMessage = $msg }
+        }
     }
 
     foreach ($item in $results) {

@@ -35,10 +35,9 @@ ACTION_TAKEN_BY_STATUS = {
     "unknown": "Delete status unknown (poll failed)",
 }
 
-# Retry/backoff. This default set (429/5xx) is safe for read-only GET calls
-# (pulling endpoints, polling task status), which have no side effects to
-# duplicate. The delete-submission POST uses a narrower set -- see
-# submit_delete_batch.
+# Retry/backoff. This default set (429/5xx) is used for read-only GET calls
+# (pulling endpoints, polling task status) as well as the delete-submission
+# POST -- see submit_delete_batch.
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 1.0
 RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
@@ -55,12 +54,17 @@ def request_with_backoff(session, method, url, headers=None, params=None, json_b
     ...) with a little jitter to avoid retry storms. Non-retryable errors are
     returned immediately for the caller to handle.
 
-    `retryable_status_codes` defaults to 429/5xx. Callers making a MUTATING
-    call (e.g. the delete submission POST) should pass a narrower set --
-    a 500/502/503/504 there can mean the request already reached and was
-    processed by the server, with only the *response* lost in transit.
-    Blindly resubmitting in that case risks a confusing duplicate submission
-    against an endpoint that was already, successfully, deleted.
+    `retryable_status_codes` defaults to 429/5xx. This also covers the
+    delete-submission POST: a 500/502/503/504 there can mean the request
+    already reached and was processed by the server, with only the
+    *response* lost in transit -- but live-verified behavior confirms
+    resubmitting is safe even then. An agentGuid the first attempt actually
+    deleted comes back "404 NotFound" on retry (not a duplicate action), and
+    the API documents a "TaskError: Delete task already in progress"
+    conflict for one still mid-flight. A submission that still fails after
+    exhausting retries doesn't abort the run either -- see
+    submit_delete_batch, which records a not_submitted row per endpoint in
+    that batch instead.
     """
     for attempt in range(MAX_RETRIES + 1):
         resp = session.request(method, url, headers=headers, params=params, json=json_body, timeout=timeout)
@@ -99,26 +103,38 @@ def submit_delete_batch(session, base_url, headers, batch):
     Returns a list of per-item dicts aligned with `batch`:
       {"taskId": str, "httpStatus": 202, "errorCode": None, "errorMessage": None}  on 202 Accepted, or
       {"taskId": None, "httpStatus": int, "errorCode": str, "errorMessage": str}  otherwise.
+
+    A batch-level failure (the submission POST itself errors, or the response
+    doesn't line up 1:1 with `batch`) does NOT abort the run -- it returns a
+    synthetic not_submitted dict (errorCode "SubmitError") for every item in
+    the batch instead, so the caller still gets a complete CSV covering this
+    batch and goes on to attempt any remaining batches.
     """
     url = f"{base_url}{DELETE_PATH}"
     body = [{"agentGuid": ep["agentGuid"]} for ep in batch]
-    # Only retry on 429 here -- see the note on request_with_backoff.
-    resp = request_with_backoff(session, "POST", url, headers=headers, json_body=body,
-                                 retryable_status_codes=(429,))
+    # Retries 429/5xx, same as read-only calls -- see the note on request_with_backoff.
+    resp = request_with_backoff(session, "POST", url, headers=headers, json_body=body)
 
     if resp.status_code != 207:
         note = ""
         if resp.status_code in (500, 502, 503, 504):
-            note = (" This status can mean the request was already received and processed by "
-                     "the server even though the response failed -- check Vision One's Audit "
-                     "Logs for this batch before re-running, to avoid a confusing duplicate "
-                     "submission.")
-        sys.exit(f"API error {resp.status_code} submitting delete batch: {resp.text}{note}")
+            note = (f" This batch was already retried {MAX_RETRIES} time(s) and still failed -- "
+                     "check Vision One's Audit Logs for this batch to see if it's a persistent "
+                     "issue before re-running. Resubmitting is safe (an endpoint the earlier "
+                     "attempt already deleted comes back 404 NotFound rather than a duplicate "
+                     "action).")
+        message = f"API error {resp.status_code} submitting delete batch: {resp.text}{note}"
+        print(message, file=sys.stderr)
+        return [{"taskId": None, "httpStatus": resp.status_code, "errorCode": "SubmitError",
+                  "errorMessage": message} for _ in batch]
 
     results = resp.json()
     if len(results) != len(batch):
-        sys.exit(f"API returned {len(results)} results for a batch of {len(batch)} — cannot "
-                  f"reliably match results to endpoints.")
+        message = (f"API returned {len(results)} results for a batch of {len(batch)} — cannot "
+                   f"reliably match results to endpoints.")
+        print(message, file=sys.stderr)
+        return [{"taskId": None, "httpStatus": None, "errorCode": "SubmitError",
+                  "errorMessage": message} for _ in batch]
 
     out = []
     for item in results:

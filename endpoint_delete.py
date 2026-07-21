@@ -33,6 +33,7 @@ ACTION_TAKEN_BY_STATUS = {
     "timeout": "Delete timed out",
     "not_submitted": "Not submitted (API error)",
     "unknown": "Delete status unknown (poll failed)",
+    "likely_deleted": "Likely already deleted (NotFound on a retried submission) -- verify in Audit Logs",
 }
 
 # Retry/backoff. This default set (429/5xx) is used for read-only GET calls
@@ -41,6 +42,13 @@ ACTION_TAKEN_BY_STATUS = {
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 1.0
 RETRYABLE_STATUS_CODES = (429, 500, 502, 503, 504)
+
+# Set by request_with_backoff after each call to the number of attempts it
+# took (1 = succeeded on the first try, no retry). submit_delete_batch reads
+# this immediately after its own call to tell a NotFound on a retried
+# submission (likely already deleted by an earlier, response-lost attempt)
+# apart from a NotFound on a first-try submission (a real error).
+_LAST_REQUEST_ATTEMPTS = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -66,9 +74,11 @@ def request_with_backoff(session, method, url, headers=None, params=None, json_b
     submit_delete_batch, which records a not_submitted row per endpoint in
     that batch instead.
     """
+    global _LAST_REQUEST_ATTEMPTS
     for attempt in range(MAX_RETRIES + 1):
         resp = session.request(method, url, headers=headers, params=params, json=json_body, timeout=timeout)
         if resp.status_code not in retryable_status_codes or attempt == MAX_RETRIES:
+            _LAST_REQUEST_ATTEMPTS = attempt + 1
             return resp
 
         retry_after = resp.headers.get("Retry-After")
@@ -84,6 +94,7 @@ def request_with_backoff(session, method, url, headers=None, params=None, json_b
               f"(attempt {attempt + 1}/{MAX_RETRIES})", file=sys.stderr)
         time.sleep(delay)
 
+    _LAST_REQUEST_ATTEMPTS = MAX_RETRIES + 1
     return resp  # unreachable, but keeps type-checkers happy
 
 
@@ -101,8 +112,14 @@ def submit_delete_batch(session, base_url, headers, batch):
     """POST one batch (<=1000 items) to /endpoints/delete.
 
     Returns a list of per-item dicts aligned with `batch`:
-      {"taskId": str, "httpStatus": 202, "errorCode": None, "errorMessage": None}  on 202 Accepted, or
-      {"taskId": None, "httpStatus": int, "errorCode": str, "errorMessage": str}  otherwise.
+      {"taskId": str, "httpStatus": 202, "errorCode": None, "errorMessage": None, "submittedAfterRetry": bool}  on 202 Accepted, or
+      {"taskId": None, "httpStatus": int, "errorCode": str, "errorMessage": str, "submittedAfterRetry": bool}  otherwise.
+
+    submittedAfterRetry is True when this batch's call only succeeded after 1+
+    retries. It lets the caller tell a NotFound that shows up on a retried
+    call (the agentGuid was most likely deleted by an earlier attempt in this
+    same batch whose response got lost) apart from a NotFound on a first-try
+    call (a real, pre-existing problem) -- see run_delete_flow.
 
     A batch-level failure (the submission POST itself errors, or the response
     doesn't line up 1:1 with `batch`) does NOT abort the run -- it returns a
@@ -126,7 +143,9 @@ def submit_delete_batch(session, base_url, headers, batch):
         message = f"API error {resp.status_code} submitting delete batch: {resp.text}{note}"
         print(message, file=sys.stderr)
         return [{"taskId": None, "httpStatus": resp.status_code, "errorCode": "SubmitError",
-                  "errorMessage": message} for _ in batch]
+                  "errorMessage": message, "submittedAfterRetry": False} for _ in batch]
+
+    was_retried = _LAST_REQUEST_ATTEMPTS > 1
 
     results = resp.json()
     if len(results) != len(batch):
@@ -134,7 +153,7 @@ def submit_delete_batch(session, base_url, headers, batch):
                    f"reliably match results to endpoints.")
         print(message, file=sys.stderr)
         return [{"taskId": None, "httpStatus": None, "errorCode": "SubmitError",
-                  "errorMessage": message} for _ in batch]
+                  "errorMessage": message, "submittedAfterRetry": False} for _ in batch]
 
     out = []
     for item in results:
@@ -145,7 +164,8 @@ def submit_delete_batch(session, base_url, headers, batch):
                 None,
             )
             task_id = task_id_from_operation_location(operation_location) if operation_location else None
-            out.append({"taskId": task_id, "httpStatus": 202, "errorCode": None, "errorMessage": None})
+            out.append({"taskId": task_id, "httpStatus": 202, "errorCode": None, "errorMessage": None,
+                        "submittedAfterRetry": was_retried})
         else:
             # code/message live directly on body -- e.g.
             #   {"status":404,"body":{"code":"NotFound","message":"Endpoint not found"}}
@@ -170,10 +190,12 @@ def submit_delete_batch(session, base_url, headers, batch):
                 message = nested_err.get("message")
 
             if code or message:
-                out.append({"taskId": None, "httpStatus": status, "errorCode": code, "errorMessage": message})
+                out.append({"taskId": None, "httpStatus": status, "errorCode": code, "errorMessage": message,
+                            "submittedAfterRetry": was_retried})
             else:
                 raw = json.dumps(item.get("body")) if item.get("body") is not None else "(no error body returned)"
-                out.append({"taskId": None, "httpStatus": status, "errorCode": None, "errorMessage": raw})
+                out.append({"taskId": None, "httpStatus": status, "errorCode": None, "errorMessage": raw,
+                            "submittedAfterRetry": was_retried})
     return out
 
 
@@ -266,9 +288,15 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
     print()
     for ep, submitted in zip(endpoints, results):
         if submitted["httpStatus"] != 202:
-            print(f"  {ep['endpointName']:<30} -> submit failed: "
+            # A NotFound on a call that only succeeded after a retry most likely means an
+            # earlier attempt in this same batch already deleted it and its response was
+            # lost -- not a real error. A NotFound on a first-try call is a genuine problem
+            # (stale CSV, invalid agentGuid, deleted outside this run). See submit_delete_batch.
+            final_status = ("likely_deleted" if submitted["errorCode"] == "NotFound" and submitted.get("submittedAfterRetry")
+                             else "not_submitted")
+            print(f"  {ep['endpointName']:<30} -> submit {final_status}: "
                   f"{submitted['httpStatus']} {submitted['errorCode']}: {submitted['errorMessage']}")
-            submitted["finalStatus"] = "not_submitted"
+            submitted["finalStatus"] = final_status
             continue
 
         final_status, http_status, error_code, error_msg = poll_task(session, base_url, headers, submitted["taskId"])
@@ -305,6 +333,7 @@ def run_delete_flow(endpoints, base_url, token, results_csv, skip_first_prompt=F
     succeeded = sum(1 for r in results if r.get("finalStatus") == "succeeded")
     failed = sum(1 for r in results if r.get("finalStatus") in ("failed", "not_submitted", "unknown"))
     timed_out = sum(1 for r in results if r.get("finalStatus") == "timeout")
-    print(f"\n{succeeded} succeeded, {failed} failed, {timed_out} timed out. "
-          f"Wrote {len(results)} rows to {results_csv}")
+    likely_deleted = sum(1 for r in results if r.get("finalStatus") == "likely_deleted")
+    print(f"\n{succeeded} succeeded, {failed} failed, {timed_out} timed out, "
+          f"{likely_deleted} likely already deleted (verify). Wrote {len(results)} rows to {results_csv}")
     return True

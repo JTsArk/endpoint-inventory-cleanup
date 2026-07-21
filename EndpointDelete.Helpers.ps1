@@ -22,12 +22,20 @@ $script:ActionTakenByStatus = @{
     timeout        = "Delete timed out"
     not_submitted  = "Not submitted (API error)"
     unknown        = "Delete status unknown (poll failed)"
+    likely_deleted = "Likely already deleted (NotFound on a retried submission) -- verify in Audit Logs"
 }
 
 # Retry/backoff for throttled (429) or transient (5xx) API responses.
 $script:DeleteMaxRetries = 5
 $script:DeleteBackoffBaseSeconds = 1.0
 $script:DeleteRetryableStatusCodes = 429, 500, 502, 503, 504
+
+# Set by Invoke-RestMethodWithBackoff after each call to the number of attempts
+# it took (1 = succeeded on the first try, no retry). Submit-DeleteBatch reads
+# this immediately after its own call to tell a NotFound on a retried
+# submission (likely already deleted by an earlier, response-lost attempt)
+# apart from a NotFound on a first-try submission (a real error).
+$script:LastRequestAttempts = 0
 
 # Invoke-RestMethod with retry + exponential backoff. Honors the Retry-After
 # header when the API sends one; otherwise backs off exponentially (1s, 2s,
@@ -58,9 +66,12 @@ function Invoke-RestMethodWithBackoff {
     for ($attempt = 0; $attempt -le $script:DeleteMaxRetries; $attempt++) {
         try {
             if ($null -ne $Body) {
-                return Invoke-RestMethod -Uri $Uri -Headers $Headers -Method $Method -Body $Body -TimeoutSec $TimeoutSec
+                $result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Method $Method -Body $Body -TimeoutSec $TimeoutSec
+            } else {
+                $result = Invoke-RestMethod -Uri $Uri -Headers $Headers -Method $Method -TimeoutSec $TimeoutSec
             }
-            return Invoke-RestMethod -Uri $Uri -Headers $Headers -Method $Method -TimeoutSec $TimeoutSec
+            $script:LastRequestAttempts = $attempt + 1
+            return $result
         } catch {
             $response = $_.Exception.Response
             $status = if ($response) { [int]$response.StatusCode } else { $null }
@@ -89,10 +100,16 @@ function Invoke-RestMethodWithBackoff {
 }
 
 # POST one batch (<=1000 items) to /endpoints/delete. Returns a list of
-# per-item objects aligned with $Batch: @{ taskId; httpStatus; errorCode; errorMessage }.
-# httpStatus/errorCode/errorMessage are kept as separate fields (rather than one
-# packed string) so a short/empty API message doesn't collapse into something
-# like "400 :" -- which some CSV viewers (Excel) misread as a duration.
+# per-item objects aligned with $Batch: @{ taskId; httpStatus; errorCode; errorMessage;
+# submittedAfterRetry }. httpStatus/errorCode/errorMessage are kept as separate fields
+# (rather than one packed string) so a short/empty API message doesn't collapse into
+# something like "400 :" -- which some CSV viewers (Excel) misread as a duration.
+#
+# submittedAfterRetry is $true when this batch's call only succeeded after 1+ retries.
+# It lets the caller tell a NotFound that shows up on a retried call (the agentGuid was
+# most likely deleted by an earlier attempt in this same batch whose response got lost)
+# apart from a NotFound on a first-try call (a real, pre-existing problem) -- see
+# Invoke-DeleteFlow.
 #
 # A batch-level failure (the submission POST itself errors, or the response
 # doesn't line up 1:1 with $Batch) does NOT abort the run -- it returns a
@@ -117,16 +134,18 @@ function Submit-DeleteBatch {
         $errMessage = "$($_.Exception.Message)$note"
         Write-Error "API error $status submitting delete batch: $errMessage" -ErrorAction Continue
         return $Batch | ForEach-Object {
-            [pscustomobject]@{ taskId = $null; httpStatus = $status; errorCode = "SubmitError"; errorMessage = $errMessage }
+            [pscustomobject]@{ taskId = $null; httpStatus = $status; errorCode = "SubmitError"; errorMessage = $errMessage; submittedAfterRetry = $false }
         }
     }
+
+    $wasRetried = $script:LastRequestAttempts -gt 1
 
     $results = @($resp)
     if ($results.Count -ne $Batch.Count) {
         $msg = "API returned $($results.Count) results for a batch of $($Batch.Count) -- cannot reliably match results to endpoints."
         Write-Error $msg -ErrorAction Continue
         return $Batch | ForEach-Object {
-            [pscustomobject]@{ taskId = $null; httpStatus = $null; errorCode = "SubmitError"; errorMessage = $msg }
+            [pscustomobject]@{ taskId = $null; httpStatus = $null; errorCode = "SubmitError"; errorMessage = $msg; submittedAfterRetry = $false }
         }
     }
 
@@ -134,7 +153,7 @@ function Submit-DeleteBatch {
         if ($item.status -eq 202) {
             $opLocation = ($item.headers | Where-Object { $_.name -eq "Operation-Location" } | Select-Object -First 1).value
             $taskId = if ($opLocation) { ($opLocation -split "/")[-1] } else { $null }
-            [pscustomobject]@{ taskId = $taskId; httpStatus = 202; errorCode = $null; errorMessage = $null }
+            [pscustomobject]@{ taskId = $taskId; httpStatus = 202; errorCode = $null; errorMessage = $null; submittedAfterRetry = $wasRetried }
         } else {
             # code/message live directly on body -- e.g.
             #   {"status":404,"body":{"code":"NotFound","message":"Endpoint not found"}}
@@ -156,10 +175,10 @@ function Submit-DeleteBatch {
             }
 
             if ($code -or $message) {
-                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $code; errorMessage = $message }
+                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $code; errorMessage = $message; submittedAfterRetry = $wasRetried }
             } else {
                 $raw = if ($null -ne $item.body) { $item.body | ConvertTo-Json -Depth 5 -Compress } else { "(no error body returned)" }
-                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $null; errorMessage = $raw }
+                [pscustomobject]@{ taskId = $null; httpStatus = $item.status; errorCode = $null; errorMessage = $raw; submittedAfterRetry = $wasRetried }
             }
         }
     }
@@ -275,17 +294,22 @@ function Invoke-DeleteFlow {
         $submitted = $submitResults[$i]
 
         if ($submitted.httpStatus -ne 202) {
-            Write-Host ("  {0,-30} -> submit failed: {1} {2}: {3}" -f $ep.endpointName, $submitted.httpStatus, $submitted.errorCode, $submitted.errorMessage)
+            # A NotFound on a call that only succeeded after a retry most likely means an
+            # earlier attempt in this same batch already deleted it and its response was
+            # lost -- not a real error. A NotFound on a first-try call is a genuine problem
+            # (stale CSV, invalid agentGuid, deleted outside this run). See Submit-DeleteBatch.
+            $finalStatus = if ($submitted.errorCode -eq "NotFound" -and $submitted.submittedAfterRetry) { "likely_deleted" } else { "not_submitted" }
+            Write-Host ("  {0,-30} -> submit {1}: {2} {3}: {4}" -f $ep.endpointName, $finalStatus, $submitted.httpStatus, $submitted.errorCode, $submitted.errorMessage)
             $finalResults.Add([pscustomobject]@{
                 endpointName              = $ep.endpointName
                 agentGuid                 = $ep.agentGuid
                 eppAgentProtectionManager = $ep.eppAgentProtectionManager
                 taskId                    = ""
-                finalStatus               = "not_submitted"
+                finalStatus               = $finalStatus
                 httpStatus                = $submitted.httpStatus
                 errorCode                 = $submitted.errorCode
                 errorMessage              = $submitted.errorMessage
-                actionTaken               = $script:ActionTakenByStatus["not_submitted"]
+                actionTaken               = $script:ActionTakenByStatus[$finalStatus]
             })
             continue
         }
@@ -312,9 +336,10 @@ function Invoke-DeleteFlow {
     $succeeded = ($finalResults | Where-Object { $_.finalStatus -eq "succeeded" }).Count
     $failed = ($finalResults | Where-Object { $_.finalStatus -in @("failed", "not_submitted", "unknown") }).Count
     $timedOut = ($finalResults | Where-Object { $_.finalStatus -eq "timeout" }).Count
+    $likelyDeleted = ($finalResults | Where-Object { $_.finalStatus -eq "likely_deleted" }).Count
 
-    Write-Host ("`n{0} succeeded, {1} failed, {2} timed out. Wrote {3} rows to {4}" -f `
-        $succeeded, $failed, $timedOut, $finalResults.Count, $DeleteResultsCsv)
+    Write-Host ("`n{0} succeeded, {1} failed, {2} timed out, {3} likely already deleted (verify). Wrote {4} rows to {5}" -f `
+        $succeeded, $failed, $timedOut, $likelyDeleted, $finalResults.Count, $DeleteResultsCsv)
 
     return $true
 }

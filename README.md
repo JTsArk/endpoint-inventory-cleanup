@@ -120,6 +120,15 @@ httpStatus, errorCode, errorMessage, actionTaken`).
 error)"). `httpStatus`/`errorCode`/`errorMessage` are only populated on
 failures, kept as separate columns rather than one packed string so a short
 API message doesn't get misread as something else by spreadsheet apps.
+
+A `NotFound` on a submission that only succeeded after a retry gets its own
+`finalStatus`, `likely_deleted`, instead of being lumped in with real
+failures: it most likely means an earlier attempt in the same batch already
+deleted that endpoint and only its response was lost, not that anything is
+actually wrong. A `NotFound` on a first-try submission (no retry involved)
+is still reported as a genuine `not_submitted` failure. Either way it's
+worth a quick check in Audit Logs if you want certainty rather than relying
+on the inference.
 `eppAgentProtectionManager` identifies which product manages the endpoint
 (e.g. Server & Workload Protection), to help triage failures without a
 separate console lookup.
